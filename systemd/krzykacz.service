@@ -1,0 +1,17 @@
+[Unit]
+Description=Krzykacz - ntfy notifications via USB light + TTS
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Environment=PATH=/home/pi/krzykacz/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EnvironmentFile=/etc/krzykacz.env
+WorkingDirectory=/home/pi/krzykacz
+ExecStart=/home/pi/krzykacz/venv/bin/python -m krzykacz
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
