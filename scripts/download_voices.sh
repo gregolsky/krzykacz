@@ -17,10 +17,20 @@ fetch() {
     mv "$out.part" "$out"
 }
 
-# darkman -- rhasspy/piper-voices, the official Piper voice collection on HuggingFace.
-DARKMAN_BASE="https://huggingface.co/rhasspy/piper-voices/resolve/main/pl/pl_PL/darkman/medium"
-fetch "$DARKMAN_BASE/pl_PL-darkman-medium.onnx" "$DEST/pl_PL-darkman-medium.onnx"
-fetch "$DARKMAN_BASE/pl_PL-darkman-medium.onnx.json" "$DEST/pl_PL-darkman-medium.onnx.json"
+# rhasspy/piper-voices -- the official Piper voice collection on HuggingFace.
+# name -> quality subdir (both parts of the .onnx filename too).
+declare -A RHASSPY_VOICES=(
+    [darkman]=medium
+    [gosia]=medium
+    [bass]=high
+    [mc_speech]=medium
+)
+for voice in "${!RHASSPY_VOICES[@]}"; do
+    quality="${RHASSPY_VOICES[$voice]}"
+    BASE="https://huggingface.co/rhasspy/piper-voices/resolve/main/pl/pl_PL/${voice}/${quality}"
+    fetch "$BASE/pl_PL-${voice}-${quality}.onnx" "$DEST/pl_PL-${voice}-${quality}.onnx"
+    fetch "$BASE/pl_PL-${voice}-${quality}.onnx.json" "$DEST/pl_PL-${voice}-${quality}.onnx.json"
+done
 
 # justyna, jarvis, meski, zenski -- same Piper .onnx/.onnx.json format,
 # mirrored by the sherpa-onnx project (csukuangfj "_wg_glos" voice family).

@@ -30,6 +30,9 @@ Supported `voice` values in the default configuration (see "Piper voices" below)
 | `jarvis` | male voice |
 | `meski` | male voice |
 | `zenski` | female voice |
+| `gosia` | female voice |
+| `bass` | male voice, high quality |
+| `mc_speech` | male voice |
 
 A value outside this list isn't an error -- it silently falls back to the default
 voice (with a warning in the log). The `espeak` backend (`KRZYKACZ_TTS=espeak`)
@@ -106,13 +109,18 @@ Run `./scripts/krzykacz.sh --help` for the full flag list.
 
 ## Piper voices 🎙️
 
-Five ready-made Polish voices, Piper format (`.onnx` + `.onnx.json`), all 22050 Hz:
+Eight ready-made Polish voices, Piper format (`.onnx` + `.onnx.json`), all 22050 Hz:
 
-- **`darkman`** (default) -- [`rhasspy/piper-voices`](https://huggingface.co/rhasspy/piper-voices),
-  the official Piper voice collection on HuggingFace.
+- **`darkman`** (default), **`gosia`**, **`bass`**, **`mc_speech`** --
+  [`rhasspy/piper-voices`](https://huggingface.co/rhasspy/piper-voices), the
+  official Piper voice collection on HuggingFace.
 - **`justyna`**, **`jarvis`**, **`meski`**, **`zenski`** --
   [`csukuangfj/vits-piper-pl_PL-*_wg_glos-medium`](https://huggingface.co/csukuangfj),
   the same Piper format, packaged via the sherpa-onnx mirror (the "wg_glos" voice family).
+
+(`rhasspy/piper-voices` also has `mls_6892` for Polish, but it's a lower-quality
+16 kHz model -- our fixed 22050 Hz pipeline doesn't support it out of the box, so
+it's left out.)
 
 Download (idempotent -- skips files already on disk):
 
