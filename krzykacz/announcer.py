@@ -64,10 +64,10 @@ class Announcer:
             self._queue.put_nowait(envelope)
         except queue.Full:
             logger.warning(
-                "Kolejka pełna (%d), odrzucam: %r", self._queue.maxsize, envelope
+                "Queue full (%d), dropping: %r", self._queue.maxsize, envelope
             )
             return
-        logger.info("Do kolejki: %r (rozmiar kolejki: %d)", envelope, self._queue.qsize())
+        logger.info("Queued: %r (queue size: %d)", envelope, self._queue.qsize())
 
     def _run(self) -> None:
         while True:
@@ -82,12 +82,12 @@ class Announcer:
     def _handle(self, envelope: Envelope) -> None:
         if isinstance(envelope, Msg):
             self._history.append(envelope)
-            logger.info("Nowa wiadomość: %s", _preview(envelope.content))
+            logger.info("New message: %s", _preview(envelope.content))
             msg = envelope
         elif isinstance(envelope, Repeat):
             try:
                 msg = self._history[envelope.number]
-                logger.info("Powtórka #%d: %s", envelope.number, _preview(msg.content))
+                logger.info("Repeat #%d: %s", envelope.number, _preview(msg.content))
             except IndexError:
                 logger.warning("repeat %s: no such message in history", envelope.number)
                 msg = Msg(content=NO_SUCH_MESSAGE)
@@ -111,8 +111,8 @@ class Announcer:
                 spoken = REPEAT_SEPARATOR.join([spoken] * msg.repeat_count)
             try:
                 logger.info(
-                    "Syntezuję (głos=%s, powtórzenia=%d): %s",
-                    msg.voice or "domyślny",
+                    "Synthesizing (voice=%s, repeats=%d): %s",
+                    msg.voice or "default",
                     msg.repeat_count,
                     _preview(spoken),
                 )
@@ -130,14 +130,14 @@ class Announcer:
             if effect_name:
                 path = self._resolve_effect(effect_name)
                 if path is not None:
-                    logger.info("Odtwarzam efekt: %s", path.name)
+                    logger.info("Playing effect: %s", path.name)
                     self._effects.play(path)
                 else:
                     logger.warning(
-                        "Efekt %r nie istnieje w %s, pomijam", effect_name, self._assets_dir
+                        "Effect %r not found in %s, skipping", effect_name, self._assets_dir
                     )
             if audio is not None:
-                logger.info("Odtwarzam mowę")
+                logger.info("Playing speech")
                 self._tts.play(audio)
         except Exception:
             logger.exception("Failed to play effect or speak message")
@@ -152,7 +152,7 @@ class Announcer:
         try:
             candidate.relative_to(self._assets_dir)
         except ValueError:
-            logger.warning("Odrzucam efekt spoza katalogu assets: %r", name)
+            logger.warning("Rejecting effect outside assets directory: %r", name)
             return None
         if not candidate.is_file():
             return None

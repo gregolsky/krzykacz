@@ -59,7 +59,7 @@ def main() -> None:
 
     voices_info = list(cfg.piper_voices) if cfg.tts_backend == "piper" else [cfg.espeak_voice]
     logger.info(
-        "krzykacz startuje: server=%s topic=%s light=%s tts=%s (głosy=%s, domyślny=%s) "
+        "krzykacz starting: server=%s topic=%s light=%s tts=%s (voices=%s, default=%s) "
         "effects=%s assets_dir=%s",
         cfg.ntfy_server,
         cfg.topic,

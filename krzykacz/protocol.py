@@ -39,7 +39,7 @@ def _truncate(text: str, max_bytes: int = MAX_CONTENT_BYTES) -> str:
     encoded = text.encode("utf-8")
     if len(encoded) <= max_bytes:
         return text
-    logger.warning("Treść wiadomości ucięta z %d do %d bajtów", len(encoded), max_bytes)
+    logger.warning("Message content truncated from %d to %d bytes", len(encoded), max_bytes)
     # errors="ignore" drops a partial multi-byte char left dangling at the cut.
     return encoded[:max_bytes].decode("utf-8", errors="ignore")
 

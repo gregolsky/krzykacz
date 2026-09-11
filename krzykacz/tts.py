@@ -56,7 +56,7 @@ class PiperTts(Tts):
         if voice and voice in self.voices:
             return self.voices[voice]
         if voice:
-            logger.warning("Nieznany głos %r, używam domyślnego %r", voice, self.default_voice)
+            logger.warning("Unknown voice %r, using default %r", voice, self.default_voice)
         return self.voices[self.default_voice]
 
     def synthesize(self, text: str, voice: Optional[str] = None) -> bytes:

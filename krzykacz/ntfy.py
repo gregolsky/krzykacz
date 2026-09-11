@@ -57,7 +57,7 @@ def _handle_line(line: bytes, on_message: Callable[[Envelope], None]) -> None:
     body = event.get("message")
     if not body:
         return
-    logger.info("Odebrano z ntfy: %r", body)
+    logger.info("Received from ntfy: %r", body)
     try:
         envelope = parse(body)
     except Exception:
