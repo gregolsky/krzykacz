@@ -24,7 +24,7 @@ declare -A PACKS=(
 for pack in "${!PACKS[@]}"; do
     url="${PACKS[$pack]}"
     zip_path="$WORKDIR/$pack.zip"
-    echo "pobieram paczkę: $pack"
+    echo "downloading pack: $pack"
     curl -fL --retry 3 -o "$zip_path" "$url"
 
     extract_dir="$WORKDIR/$pack"
@@ -42,6 +42,6 @@ for pack in "${!PACKS[@]}"; do
     done
 done
 
-echo "gotowe: $DEST"
+echo "done: $DEST"
 ls "$DEST" | wc -l
-echo "plików dźwiękowych"
+echo "sound files"

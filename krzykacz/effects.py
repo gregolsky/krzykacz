@@ -6,6 +6,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
 
+from .procutil import wait_or_kill
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,8 +62,8 @@ class FfmpegEffects(Effects):
         aplay = subprocess.Popen(aplay_cmd, stdin=ffmpeg.stdout)
         if ffmpeg.stdout is not None:
             ffmpeg.stdout.close()
-        aplay.wait(timeout=30)
-        ffmpeg.wait(timeout=30)
+        wait_or_kill(aplay, timeout=30)
+        wait_or_kill(ffmpeg, timeout=30)
 
 
 class NullEffects(Effects):

@@ -5,6 +5,8 @@ import subprocess
 from abc import ABC, abstractmethod
 from typing import Dict, Optional
 
+from .procutil import communicate_or_kill
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,7 +78,7 @@ class PiperTts(Tts):
             + ["-f", "S16_LE", "-r", str(self.sample_rate), "-c", "1", "-t", "raw"],
             stdin=subprocess.PIPE,
         )
-        aplay.communicate(audio, timeout=30)
+        communicate_or_kill(aplay, audio, timeout=30)
 
 
 class EspeakTts(Tts):
@@ -99,4 +101,4 @@ class EspeakTts(Tts):
 
     def play(self, audio: bytes) -> None:
         aplay = subprocess.Popen(_aplay_cmd(self.alsa_device), stdin=subprocess.PIPE)
-        aplay.communicate(audio, timeout=30)
+        communicate_or_kill(aplay, audio, timeout=30)

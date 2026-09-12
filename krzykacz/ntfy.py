@@ -7,7 +7,7 @@ from typing import Callable
 
 import requests
 
-from .protocol import Envelope, parse
+from .protocol import Envelope, parse, preview
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ def _handle_line(line: bytes, on_message: Callable[[Envelope], None]) -> None:
     body = event.get("message")
     if not body:
         return
-    logger.info("Received from ntfy: %r", body)
+    logger.info("Received from ntfy: %s", preview(body))
     try:
         envelope = parse(body)
     except Exception:

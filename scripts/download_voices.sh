@@ -40,5 +40,5 @@ for voice in justyna jarvis meski zenski; do
     fetch "$BASE/pl_PL-${voice}_wg_glos-medium.onnx.json" "$DEST/pl_PL-${voice}_wg_glos-medium.onnx.json"
 done
 
-echo "gotowe: $DEST"
+echo "done: $DEST"
 ls -la "$DEST"

@@ -9,7 +9,7 @@ from typing import Optional
 
 from .effects import Effects
 from .light import Light
-from .protocol import REPEAT_SEPARATOR, Envelope, Msg, Repeat, split_effect
+from .protocol import REPEAT_SEPARATOR, Envelope, Msg, Repeat, preview, split_effect
 from .tts import Tts
 
 logger = logging.getLogger(__name__)
@@ -17,11 +17,6 @@ logger = logging.getLogger(__name__)
 NO_SUCH_MESSAGE = "Nie ma takiej wiadomości"
 
 _TERMINAL_PUNCTUATION = ".!?:;…"
-
-
-def _preview(text: str, limit: int = 80) -> str:
-    text = text.replace("\n", " ")
-    return text if len(text) <= limit else text[:limit] + "…"
 
 
 def _with_terminal_punctuation(text: str) -> str:
@@ -82,12 +77,12 @@ class Announcer:
     def _handle(self, envelope: Envelope) -> None:
         if isinstance(envelope, Msg):
             self._history.append(envelope)
-            logger.info("New message: %s", _preview(envelope.content))
+            logger.info("New message: %s", preview(envelope.content))
             msg = envelope
         elif isinstance(envelope, Repeat):
             try:
                 msg = self._history[envelope.number]
-                logger.info("Repeat #%d: %s", envelope.number, _preview(msg.content))
+                logger.info("Repeat #%d: %s", envelope.number, preview(msg.content))
             except IndexError:
                 logger.warning("repeat %s: no such message in history", envelope.number)
                 msg = Msg(content=NO_SUCH_MESSAGE)
@@ -114,7 +109,7 @@ class Announcer:
                     "Synthesizing (voice=%s, repeats=%d): %s",
                     msg.voice or "default",
                     msg.repeat_count,
-                    _preview(spoken),
+                    preview(spoken),
                 )
                 audio = self._tts.synthesize(spoken, voice=msg.voice)
             except Exception:

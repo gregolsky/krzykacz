@@ -35,6 +35,13 @@ class Repeat:
 Envelope = Union[Msg, Repeat]
 
 
+def preview(text: str, limit: int = 80) -> str:
+    """Shortens text for logging -- messages can be up to MAX_CONTENT_BYTES,
+    far too long to dump into a log line."""
+    text = text.replace("\n", " ")
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
 def _truncate(text: str, max_bytes: int = MAX_CONTENT_BYTES) -> str:
     encoded = text.encode("utf-8")
     if len(encoded) <= max_bytes:
