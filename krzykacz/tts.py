@@ -5,7 +5,7 @@ import subprocess
 from abc import ABC, abstractmethod
 from typing import Dict, Optional
 
-from .procutil import communicate_or_kill
+from .procutil import aplay_cmd, aplay_raw_cmd, communicate_or_kill
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +22,6 @@ class Tts(ABC):
         two steps separately so synthesis can happen before the light turns
         on -- see Announcer._announce."""
         self.play(self.synthesize(text, voice))
-
-
-def _aplay_cmd(alsa_device: Optional[str]) -> list[str]:
-    cmd = ["aplay", "-q"]
-    if alsa_device:
-        cmd += ["-D", alsa_device]
-    return cmd
 
 
 class PiperTts(Tts):
@@ -74,8 +67,7 @@ class PiperTts(Tts):
 
     def play(self, audio: bytes) -> None:
         aplay = subprocess.Popen(
-            _aplay_cmd(self.alsa_device)
-            + ["-f", "S16_LE", "-r", str(self.sample_rate), "-c", "1", "-t", "raw"],
+            aplay_raw_cmd(self.alsa_device, self.sample_rate, channels=1),
             stdin=subprocess.PIPE,
         )
         communicate_or_kill(aplay, audio, timeout=30)
@@ -100,5 +92,5 @@ class EspeakTts(Tts):
         return result.stdout
 
     def play(self, audio: bytes) -> None:
-        aplay = subprocess.Popen(_aplay_cmd(self.alsa_device), stdin=subprocess.PIPE)
+        aplay = subprocess.Popen(aplay_cmd(self.alsa_device), stdin=subprocess.PIPE)
         communicate_or_kill(aplay, audio, timeout=30)

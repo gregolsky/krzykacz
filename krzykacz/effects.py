@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
 
-from .procutil import wait_or_kill
+from .procutil import aplay_raw_cmd, kill, wait_or_kill
 
 logger = logging.getLogger(__name__)
 
@@ -46,24 +46,27 @@ class FfmpegEffects(Effects):
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
         )
-        aplay_cmd = ["aplay", "-q"]
-        if self.alsa_device:
-            aplay_cmd += ["-D", self.alsa_device]
-        aplay_cmd += [
-            "-f",
-            "S16_LE",
-            "-r",
-            str(self.SAMPLE_RATE),
-            "-c",
-            str(self.CHANNELS),
-            "-t",
-            "raw",
-        ]
-        aplay = subprocess.Popen(aplay_cmd, stdin=ffmpeg.stdout)
+        try:
+            aplay = subprocess.Popen(
+                aplay_raw_cmd(self.alsa_device, self.SAMPLE_RATE, self.CHANNELS),
+                stdin=ffmpeg.stdout,
+            )
+        except Exception:
+            kill(ffmpeg)
+            raise
+
         if ffmpeg.stdout is not None:
             ffmpeg.stdout.close()
-        wait_or_kill(aplay, timeout=30)
-        wait_or_kill(ffmpeg, timeout=30)
+
+        # Both processes must be reaped even if the first wait times out and
+        # raises -- otherwise the survivor is left holding the ALSA device,
+        # which is exactly the leak these helpers exist to prevent.
+        try:
+            wait_or_kill(aplay, timeout=30)
+            wait_or_kill(ffmpeg, timeout=30)
+        finally:
+            kill(aplay)
+            kill(ffmpeg)
 
 
 class NullEffects(Effects):
