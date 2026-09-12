@@ -103,7 +103,7 @@ Run `./scripts/krzykacz.sh --help` for the full flag list.
 | `KRZYKACZ_ESPEAK_VOICE` | `pl` | espeak-ng voice (fallback backend) |
 | `KRZYKACZ_ALSA_DEVICE` | *(unset = system default)* | ALSA device for `aplay` -- **check `aplay -l` on your Pi: the default card may be HDMI, not the jack, in which case you need something like `plughw:1,0`** |
 | `KRZYKACZ_EFFECTS` | `ffmpeg` | `ffmpeg` or `null` |
-| `KRZYKACZ_ASSETS_DIR` | `/home/pi/krzykacz-assets` | directory holding sound effect files |
+| `KRZYKACZ_ASSETS_DIR` | `/var/lib/krzykacz/assets` | directory holding sound effect files |
 | `KRZYKACZ_HISTORY` | `10` | how many recent messages to keep in memory |
 | `KRZYKACZ_QUEUE_SIZE` | `10` | max number of messages waiting to be played; anything beyond that is dropped (with a log warning) rather than queued indefinitely |
 
@@ -149,7 +149,7 @@ plays any format `ffmpeg` can decode):
 ./scripts/download_effects.sh /path/to/assets
 ```
 
-The default target directory is `/home/pi/krzykacz-assets`, matching the default
+The default target directory is `/var/lib/krzykacz/assets`, matching the default
 `KRZYKACZ_ASSETS_DIR` above. Each file on disk is named `<pack>_<original-name>`,
 e.g. `interface-sounds_error_001.ogg` -- that's exactly the name you put in the
 `<...>` tag.
@@ -176,6 +176,21 @@ The only two things the service touches that normally require privilege -- the U
 hub (`uhubctl`, for the light) and the audio device (`aplay`) -- are granted via a
 narrow udev rule and the `audio` group, both set up by the script. Re-run it any time
 after pulling an update; it's idempotent.
+
+The code is copied to `/opt/krzykacz`, which is what the service actually runs
+from. Home directories are mode `0700` on Raspberry Pi OS, so a service user can't
+traverse into one -- installing outside `/home` is better than loosening those
+permissions, and it lets the unit use `ProtectHome=yes` to hide `/home` from the
+service entirely. Voices and sound effects live under `/var/lib/krzykacz/` for the
+same reason.
+
+The venv is not managed by the script (onnxruntime wheels are slow to build on a
+Pi, so it's preserved across runs). Create it once:
+
+```bash
+sudo python3 -m venv /opt/krzykacz/venv
+sudo /opt/krzykacz/venv/bin/pip install -r /opt/krzykacz/requirements.txt piper-tts
+```
 
 ```bash
 systemctl status krzykacz

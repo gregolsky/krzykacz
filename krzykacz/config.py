@@ -76,7 +76,7 @@ class Config:
             espeak_voice=_env("KRZYKACZ_ESPEAK_VOICE", "pl"),
             alsa_device=_env("KRZYKACZ_ALSA_DEVICE"),
             effects_backend=_env("KRZYKACZ_EFFECTS", "ffmpeg"),
-            assets_dir=_env("KRZYKACZ_ASSETS_DIR", "/home/pi/krzykacz-assets"),
+            assets_dir=_env("KRZYKACZ_ASSETS_DIR", "/var/lib/krzykacz/assets"),
             history_size=int(_env("KRZYKACZ_HISTORY", "10")),
             queue_size=int(_env("KRZYKACZ_QUEUE_SIZE", "10")),
         )

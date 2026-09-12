@@ -7,7 +7,7 @@
 # Requires: curl, unzip.
 set -euo pipefail
 
-DEST="${1:-/home/pi/krzykacz-assets}"
+DEST="${1:-/var/lib/krzykacz/assets}"
 mkdir -p "$DEST"
 
 WORKDIR="$(mktemp -d)"

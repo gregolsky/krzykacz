@@ -8,10 +8,10 @@ Type=simple
 User=krzykacz
 Group=krzykacz
 SupplementaryGroups=audio
-Environment=PATH=/home/pi/krzykacz/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=/opt/krzykacz/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=/etc/krzykacz.env
-WorkingDirectory=/home/pi/krzykacz
-ExecStart=/home/pi/krzykacz/venv/bin/python -m krzykacz
+WorkingDirectory=/opt/krzykacz
+ExecStart=/opt/krzykacz/venv/bin/python -m krzykacz
 Restart=always
 RestartSec=5
 
@@ -23,7 +23,7 @@ NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 ProtectSystem=strict
-ProtectHome=read-only
+ProtectHome=yes
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
