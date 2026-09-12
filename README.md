@@ -162,6 +162,26 @@ pip install -r requirements.txt
 KRZYKACZ_LIGHT=null KRZYKACZ_TTS=espeak KRZYKACZ_TOPIC=<your-topic> python -m krzykacz
 ```
 
+## Deployment (systemd) 🚀
+
+```bash
+# on the Pi, after rsync-ing the repo to /home/pi/krzykacz and creating
+# /etc/krzykacz.env (see Configuration above):
+sudo ./scripts/install-service.sh
+```
+
+This creates a dedicated, unprivileged `krzykacz` system user (no login shell, no
+sudo) and installs `systemd/krzykacz.service` to run as that user rather than root.
+The only two things the service touches that normally require privilege -- the USB
+hub (`uhubctl`, for the light) and the audio device (`aplay`) -- are granted via a
+narrow udev rule and the `audio` group, both set up by the script. Re-run it any time
+after pulling an update; it's idempotent.
+
+```bash
+systemctl status krzykacz
+journalctl -u krzykacz -f
+```
+
 ## Unit tests ✅
 
 ```bash

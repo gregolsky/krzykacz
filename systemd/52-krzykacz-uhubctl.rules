@@ -1,0 +1,6 @@
+# Grants the krzykacz service (running as the unprivileged `krzykacz` user)
+# write access to the built-in USB hub so uhubctl can toggle port power
+# without running as root. @VID@/@PID@ are filled in by scripts/install-service.sh
+# for the specific hub at KRZYKACZ_UHUBCTL_LOC -- different Pi models ship
+# different hub chips.
+SUBSYSTEM=="usb", ATTR{idVendor}=="@VID@", ATTR{idProduct}=="@PID@", MODE="0660", GROUP="krzykacz"

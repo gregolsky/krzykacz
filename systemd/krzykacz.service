@@ -5,13 +5,40 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+User=krzykacz
+Group=krzykacz
+SupplementaryGroups=audio
 Environment=PATH=/home/pi/krzykacz/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=/etc/krzykacz.env
 WorkingDirectory=/home/pi/krzykacz
 ExecStart=/home/pi/krzykacz/venv/bin/python -m krzykacz
 Restart=always
 RestartSec=5
+
+# Hardening. The service needs no write access anywhere (journald handles
+# logs, models/assets are read-only) -- uhubctl and aplay are the only
+# privileged-looking operations, and both work unprivileged via the
+# `krzykacz` group (udev rule + audio group, see scripts/install-service.sh).
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# Do NOT set PrivateDevices= -- it would hide /dev/snd and /dev/bus/usb,
+# breaking both audio and the light.
+# Do NOT set MemoryDenyWriteExecute= -- it applies to child processes too,
+# and onnxruntime (inside `piper`) needs W^X memory for JIT.
 
 [Install]
 WantedBy=multi-user.target
