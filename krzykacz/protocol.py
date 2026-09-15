@@ -78,6 +78,25 @@ def _clean_repeat_count(value: object) -> int:
     return min(count, MAX_REPEAT_COUNT)
 
 
+def build_msg(content: str, voice: object = None, repeat: object = None) -> Msg:
+    """Builds a validated Msg from already-typed fields (as opposed to
+    `parse`, which extracts them from a raw JSON body) -- used by the
+    HTTP/MCP endpoints, which receive typed arguments directly."""
+    return Msg(
+        content=_truncate(content),
+        voice=_clean_voice(voice),
+        repeat_count=_clean_repeat_count(repeat),
+    )
+
+
+def build_repeat(number: object) -> Repeat:
+    try:
+        number = int(number)
+    except (TypeError, ValueError):
+        number = -1
+    return Repeat(number=number)
+
+
 def parse(body: str) -> Envelope:
     """Parse an ntfy message body into an Envelope.
 
@@ -98,22 +117,13 @@ def parse(body: str) -> Envelope:
     kind = data.get("type")
 
     if kind == "repeat":
-        number = data.get("number", -1)
-        try:
-            number = int(number)
-        except (TypeError, ValueError):
-            number = -1
-        return Repeat(number=number)
+        return build_repeat(data.get("number", -1))
 
     if kind == "msg":
         content = data.get("content")
         if not isinstance(content, str):
             return Msg(content=_truncate(body))
-        return Msg(
-            content=_truncate(content),
-            voice=_clean_voice(data.get("voice")),
-            repeat_count=_clean_repeat_count(data.get("repeat")),
-        )
+        return build_msg(content, voice=data.get("voice"), repeat=data.get("repeat"))
 
     return Msg(content=_truncate(body))
 

@@ -335,12 +335,12 @@ def test_queue_drops_messages_beyond_max_size(tmp_path):
 
     # First message is dequeued immediately and blocks inside light.on() --
     # the queue itself is empty again the moment the worker picks it up.
-    announcer.submit(Msg(content="one"))
+    assert announcer.submit(Msg(content="one")) is True
     assert started.wait(timeout=2), "worker never started processing the first message"
 
     for i in range(3):
-        announcer.submit(Msg(content=f"queued-{i}"))
-    announcer.submit(Msg(content="overflow"))  # queue is full (3/3) -- dropped
+        assert announcer.submit(Msg(content=f"queued-{i}")) is True
+    assert announcer.submit(Msg(content="overflow")) is False  # queue is full (3/3)
 
     release.set()
     drain(announcer, timeout=5)

@@ -9,6 +9,10 @@ def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     return os.environ.get(name, default)
 
 
+def _env_bool(name: str) -> bool:
+    return _env(name, "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _parse_voices(raw: Optional[str]) -> Dict[str, str]:
     """Parses "name1=/path1.onnx,name2=/path2.onnx" into a dict. Blank input
     yields an empty dict; malformed entries (no "=") are skipped with a
@@ -48,6 +52,16 @@ class Config:
     history_size: int
     queue_size: int
 
+    http_enabled: bool
+    http_host: str
+    http_port: int
+
+    mcp_enabled: bool
+    mcp_host: str
+    mcp_port: int
+
+    auth_token: Optional[str]
+
     @property
     def piper_voices(self) -> Dict[str, str]:
         voices = {self.piper_default_voice: self.piper_model}
@@ -79,4 +93,11 @@ class Config:
             assets_dir=_env("KRZYKACZ_ASSETS_DIR", "/var/lib/krzykacz/assets"),
             history_size=int(_env("KRZYKACZ_HISTORY", "10")),
             queue_size=int(_env("KRZYKACZ_QUEUE_SIZE", "10")),
+            http_enabled=_env_bool("KRZYKACZ_HTTP_ENABLED"),
+            http_host=_env("KRZYKACZ_HTTP_HOST", "0.0.0.0"),
+            http_port=int(_env("KRZYKACZ_HTTP_PORT", "8123")),
+            mcp_enabled=_env_bool("KRZYKACZ_MCP_ENABLED"),
+            mcp_host=_env("KRZYKACZ_MCP_HOST", "0.0.0.0"),
+            mcp_port=int(_env("KRZYKACZ_MCP_PORT", "8124")),
+            auth_token=_env("KRZYKACZ_AUTH_TOKEN"),
         )

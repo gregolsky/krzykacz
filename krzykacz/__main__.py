@@ -1,15 +1,33 @@
 from __future__ import annotations
 
+import functools
 import logging
+import threading
 
 from .announcer import Announcer
 from .config import Config
 from .effects import Effects, FfmpegEffects, NullEffects
+from .http_server import build_http_server
 from .light import Light, NullLight, UhubctlLight
+from .metadata import describe
 from .ntfy import listen
 from .tts import EspeakTts, PiperTts, Tts
 
 logger = logging.getLogger(__name__)
+
+
+def _start_thread(name: str, target, *args) -> None:
+    """Runs target in a daemon thread, logging any exception that escapes it.
+    Without this a failed server start (e.g. the optional `mcp` package
+    missing) would kill its thread silently while the service stayed up."""
+
+    def run() -> None:
+        try:
+            target(*args)
+        except Exception:
+            logger.exception("%s failed", name)
+
+    threading.Thread(target=run, daemon=True, name=name).start()
 
 
 def build_light(cfg: Config) -> Light:
@@ -58,6 +76,33 @@ def main() -> None:
     announcer.start()
 
     voices_info = list(cfg.piper_voices) if cfg.tts_backend == "piper" else [cfg.espeak_voice]
+    default_voice = cfg.piper_default_voice if cfg.tts_backend == "piper" else cfg.espeak_voice
+    metadata = functools.partial(
+        describe, cfg.tts_backend, voices_info, default_voice, cfg.assets_dir
+    )
+
+    if cfg.http_enabled:
+        # Binds here on the main thread, so a port clash fails loudly at
+        # startup rather than inside the worker thread.
+        http_server = build_http_server(
+            cfg.http_host, cfg.http_port, cfg.auth_token, announcer.submit, metadata
+        )
+        _start_thread("http-server", http_server.serve_forever)
+        logger.info("HTTP endpoint listening on %s:%d", cfg.http_host, cfg.http_port)
+
+    if cfg.mcp_enabled:
+        from .mcp_server import run_mcp_server
+
+        _start_thread(
+            "mcp-server",
+            run_mcp_server,
+            cfg.mcp_host,
+            cfg.mcp_port,
+            cfg.auth_token,
+            announcer.submit,
+        )
+        logger.info("Starting MCP endpoint on %s:%d", cfg.mcp_host, cfg.mcp_port)
+
     logger.info(
         "krzykacz starting: server=%s topic=%s light=%s tts=%s (voices=%s, default=%s) "
         "effects=%s assets_dir=%s",
@@ -66,7 +111,7 @@ def main() -> None:
         cfg.light_backend,
         cfg.tts_backend,
         voices_info,
-        cfg.piper_default_voice if cfg.tts_backend == "piper" else cfg.espeak_voice,
+        default_voice,
         cfg.effects_backend,
         cfg.assets_dir,
     )

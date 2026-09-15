@@ -3,18 +3,17 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Callable
-
 import requests
 
-from .protocol import Envelope, parse, preview
+from .announcer import Submit
+from .protocol import parse, preview
 
 logger = logging.getLogger(__name__)
 
 MAX_BACKOFF_S = 30
 
 
-def listen(server: str, topic: str, on_message: Callable[[Envelope], None]) -> None:
+def listen(server: str, topic: str, on_message: Submit) -> None:
     """Subscribes to the ntfy JSON stream and calls on_message for each parsed
     envelope. Reconnects with exponential backoff on any network error.
     Intentionally does not use `since=` — after a reconnect, missed messages
@@ -42,7 +41,7 @@ def listen(server: str, topic: str, on_message: Callable[[Envelope], None]) -> N
         backoff = min(backoff * 2, MAX_BACKOFF_S)
 
 
-def _handle_line(line: bytes, on_message: Callable[[Envelope], None]) -> None:
+def _handle_line(line: bytes, on_message: Submit) -> None:
     try:
         event = json.loads(line)
     except json.JSONDecodeError:

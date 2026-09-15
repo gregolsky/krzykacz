@@ -5,7 +5,7 @@ import queue
 import threading
 from collections import deque
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .effects import Effects
 from .light import Light
@@ -13,6 +13,11 @@ from .protocol import REPEAT_SEPARATOR, Envelope, Msg, Repeat, preview, split_ef
 from .tts import Tts
 
 logger = logging.getLogger(__name__)
+
+# The signature of Announcer.submit: hands an envelope to the playback queue,
+# returning False if it was dropped because the queue is full. Message sources
+# (ntfy, HTTP, MCP) depend on this rather than on Announcer itself.
+Submit = Callable[[Envelope], bool]
 
 NO_SUCH_MESSAGE = "Nie ma takiej wiadomości"
 
@@ -54,15 +59,16 @@ class Announcer:
     def start(self) -> None:
         self._thread.start()
 
-    def submit(self, envelope: Envelope) -> None:
+    def submit(self, envelope: Envelope) -> bool:
         try:
             self._queue.put_nowait(envelope)
         except queue.Full:
             logger.warning(
                 "Queue full (%d), dropping: %r", self._queue.maxsize, envelope
             )
-            return
+            return False
         logger.info("Queued: %r (queue size: %d)", envelope, self._queue.qsize())
+        return True
 
     def _run(self) -> None:
         while True:

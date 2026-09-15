@@ -87,6 +87,116 @@ export KRZYKACZ_TOPIC=<your-topic>
 
 Run `./scripts/krzykacz.sh --help` for the full flag list.
 
+## HTTP and MCP endpoints 🌐
+
+Besides ntfy, krzykacz can accept the same messages directly over the local
+network -- no ntfy relay needed. Both are off by default and run inside the
+existing process.
+
+### Auth
+
+Both endpoints are open by default, same trust model as ntfy (the topic
+name is the only secret there). Set `KRZYKACZ_AUTH_TOKEN` to require a
+bearer token (`Authorization: Bearer <token>`) on every request to either
+endpoint -- the examples below include it; drop the header if you haven't
+set a token.
+
+### HTTP
+
+Set `KRZYKACZ_HTTP_ENABLED=1`. The HTTP API is versioned under `/v1`.
+
+#### `POST /v1/publish`
+
+Accepts the exact same JSON body as the ntfy protocol above:
+
+```bash
+curl -H "Authorization: Bearer <token>" \
+  -d '{"type": "msg", "content": "hello", "voice": "justyna"}' \
+  http://192.168.1.50:8123/v1/publish
+```
+
+Responds `202 {"status": "queued"}`, or `503 {"status": "dropped"}` if the
+announcer's queue is full (see `KRZYKACZ_QUEUE_SIZE`), or `401` if the
+token is missing/wrong.
+
+#### `GET /v1/metadata`
+
+Reports what this particular instance can actually play -- the configured
+voices and the sound effects present in `KRZYKACZ_ASSETS_DIR` -- so a client
+doesn't have to hardcode the tables from this README:
+
+```bash
+curl -H "Authorization: Bearer <token>" http://192.168.1.50:8123/v1/metadata
+```
+
+```json
+{
+  "tts": "piper",
+  "voices": ["darkman", "justyna", "jarvis", "meski", "zenski", "gosia", "bass", "mc_speech"],
+  "default_voice": "darkman",
+  "effects": ["digital-audio_alarm_001.ogg", "interface-sounds_error_001.ogg", "..."]
+}
+```
+
+`tts` tells you how to interpret `voice`: under `piper` the names come from the
+configured voice map, under `espeak` they're espeak-ng language codes. `effects`
+lists the filenames usable in a `<file>` tag; it's read fresh from disk on each
+request, so effects added by `download_effects.sh` show up without a restart.
+
+### MCP
+
+Set `KRZYKACZ_MCP_ENABLED=1`. Exposes an MCP server over Streamable HTTP at
+`http://<host>:8124/mcp`, with two tools:
+
+- `send_message(content, voice=None, repeat=None)`
+- `repeat_message(number=-1)`
+
+This uses the official `mcp` Python SDK, which is **not** in
+`requirements.txt` (like `piper-tts`, it's an optional extra -- install it
+only if you use this feature) and **requires Python >= 3.10** (Raspberry Pi
+OS bullseye ships 3.9; use bookworm or newer for this feature):
+
+```bash
+pip install mcp
+```
+
+From an MCP client config (e.g. Claude Desktop / any client that supports a
+remote Streamable HTTP server with custom headers):
+
+```json
+{
+  "mcpServers": {
+    "krzykacz": {
+      "url": "http://192.168.1.50:8124/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
+
+Or talk to it directly with `curl` (raw MCP JSON-RPC over Streamable HTTP)
+-- a session has to be opened with `initialize` first (most MCP clients do
+this automatically), then reused via the `Mcp-Session-Id` response header
+on every following call:
+
+```bash
+HOST=192.168.1.50:8124
+TOKEN=<token>
+
+SESSION=$(curl -si -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1.0"}}}' \
+  "http://$HOST/mcp" | grep -i '^mcp-session-id:' | tr -d '\r' | cut -d' ' -f2)
+
+curl -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Mcp-Session-Id: $SESSION" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"send_message","arguments":{"content":"hello"}}}' \
+  "http://$HOST/mcp"
+```
+
 ## Configuration (environment variables) ⚙️
 
 | Variable | Default | Description |
@@ -106,6 +216,13 @@ Run `./scripts/krzykacz.sh --help` for the full flag list.
 | `KRZYKACZ_ASSETS_DIR` | `/var/lib/krzykacz/assets` | directory holding sound effect files |
 | `KRZYKACZ_HISTORY` | `10` | how many recent messages to keep in memory |
 | `KRZYKACZ_QUEUE_SIZE` | `10` | max number of messages waiting to be played; anything beyond that is dropped (with a log warning) rather than queued indefinitely |
+| `KRZYKACZ_HTTP_ENABLED` | `0` | set to `1` to enable the HTTP endpoints (`POST /v1/publish`, `GET /v1/metadata`) |
+| `KRZYKACZ_HTTP_HOST` | `0.0.0.0` | HTTP endpoint bind address |
+| `KRZYKACZ_HTTP_PORT` | `8123` | HTTP endpoint port |
+| `KRZYKACZ_MCP_ENABLED` | `0` | set to `1` to enable the MCP endpoint (requires `pip install mcp`, Python >= 3.10) |
+| `KRZYKACZ_MCP_HOST` | `0.0.0.0` | MCP endpoint bind address |
+| `KRZYKACZ_MCP_PORT` | `8124` | MCP endpoint port |
+| `KRZYKACZ_AUTH_TOKEN` | *(unset = no auth)* | bearer token required by the HTTP and MCP endpoints when set |
 
 ## Piper voices 🎙️
 
@@ -190,6 +307,8 @@ Pi, so it's preserved across runs). Create it once:
 ```bash
 sudo python3 -m venv /opt/krzykacz/venv
 sudo /opt/krzykacz/venv/bin/pip install -r /opt/krzykacz/requirements.txt piper-tts
+# only if using the MCP endpoint (KRZYKACZ_MCP_ENABLED=1, needs Python >= 3.10):
+sudo /opt/krzykacz/venv/bin/pip install mcp
 ```
 
 ```bash
