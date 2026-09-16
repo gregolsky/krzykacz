@@ -12,6 +12,7 @@ from krzykacz.http_server import (
     MAX_BODY_BYTES,
     METADATA_PATH,
     PUBLISH_PATH,
+    QUEUE_PATH,
     PublishHandler,
     build_http_server,
 )
@@ -30,6 +31,7 @@ def server_factory():
             cfg.auth_token,
             announcer.submit,
             metadata or (lambda: {"tts": "espeak", "voices": ["pl"], "default_voice": "pl", "effects": []}),
+            announcer.snapshot,
         )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -74,18 +76,40 @@ def test_valid_msg_is_submitted_and_queued(server_factory):
     announcer = FakeAnnouncer()
     server = server_factory(make_config(), announcer)
 
-    status, payload = post(server, PUBLISH_PATH, '{"type":"msg","content":"hello"}')
+    status, payload = post(server, PUBLISH_PATH, "hello")
 
     assert status == 202
     assert payload == {"status": "queued"}
     assert announcer.submitted == [Msg(content="hello")]
 
 
-def test_repeat_body_is_submitted(server_factory):
+def test_tags_header_sets_voice_and_repeat(server_factory):
     announcer = FakeAnnouncer()
     server = server_factory(make_config(), announcer)
 
-    status, _ = post(server, PUBLISH_PATH, '{"type":"repeat","number":-2}')
+    status, _ = post(
+        server, PUBLISH_PATH, "hello", headers={"Tags": "voice=justyna,repeat=2"}
+    )
+
+    assert status == 202
+    assert announcer.submitted == [Msg(content="hello", voice="justyna", repeat_count=2)]
+
+
+def test_x_tags_alias_is_accepted(server_factory):
+    announcer = FakeAnnouncer()
+    server = server_factory(make_config(), announcer)
+
+    status, _ = post(server, PUBLISH_PATH, "hello", headers={"X-Tags": "voice=justyna"})
+
+    assert status == 202
+    assert announcer.submitted == [Msg(content="hello", voice="justyna")]
+
+
+def test_replay_tag_is_submitted_as_repeat(server_factory):
+    announcer = FakeAnnouncer()
+    server = server_factory(make_config(), announcer)
+
+    status, _ = post(server, PUBLISH_PATH, "", headers={"Tags": "replay=-2"})
 
     assert status == 202
     assert announcer.submitted == [Repeat(number=-2)]
@@ -95,7 +119,7 @@ def test_dropped_when_queue_full_returns_503(server_factory):
     announcer = FakeAnnouncer(accept=False)
     server = server_factory(make_config(), announcer)
 
-    status, payload = post(server, PUBLISH_PATH, '{"type":"msg","content":"hello"}')
+    status, payload = post(server, PUBLISH_PATH, "hello")
 
     assert status == 503
     assert payload == {"status": "dropped"}
@@ -105,7 +129,7 @@ def test_wrong_path_is_404(server_factory):
     announcer = FakeAnnouncer()
     server = server_factory(make_config(), announcer)
 
-    status, _ = post(server, "/nope", '{"type":"msg","content":"hello"}')
+    status, _ = post(server, "/nope", "hello")
 
     assert status == 404
     assert announcer.submitted == []
@@ -125,14 +149,14 @@ def test_auth_token_required_when_configured(server_factory):
     announcer = FakeAnnouncer()
     server = server_factory(make_config(auth_token="secret"), announcer)
 
-    status, _ = post(server, PUBLISH_PATH, '{"type":"msg","content":"hello"}')
+    status, _ = post(server, PUBLISH_PATH, "hello")
     assert status == 401
     assert announcer.submitted == []
 
     status, _ = post(
         server,
         PUBLISH_PATH,
-        '{"type":"msg","content":"hello"}',
+        "hello",
         headers={"Authorization": "Bearer wrong"},
     )
     assert status == 401
@@ -141,7 +165,7 @@ def test_auth_token_required_when_configured(server_factory):
     status, _ = post(
         server,
         PUBLISH_PATH,
-        '{"type":"msg","content":"hello"}',
+        "hello",
         headers={"Authorization": "Bearer secret"},
     )
     assert status == 202
@@ -152,7 +176,7 @@ def test_no_auth_token_configured_allows_any_request(server_factory):
     announcer = FakeAnnouncer()
     server = server_factory(make_config(auth_token=None), announcer)
 
-    status, _ = post(server, PUBLISH_PATH, '{"type":"msg","content":"hello"}')
+    status, _ = post(server, PUBLISH_PATH, "hello")
 
     assert status == 202
 
@@ -220,7 +244,7 @@ def test_unversioned_publish_path_is_404(server_factory):
     announcer = FakeAnnouncer()
     server = server_factory(make_config(), announcer)
 
-    status, _ = post(server, "/publish", '{"type":"msg","content":"hello"}')
+    status, _ = post(server, "/publish", "hello")
 
     assert status == 404
     assert announcer.submitted == []
@@ -259,6 +283,7 @@ def test_wrong_method_on_known_path_is_405(server_factory):
 
     assert get(server, PUBLISH_PATH)[0] == 405
     assert post(server, METADATA_PATH, "{}")[0] == 405
+    assert post(server, QUEUE_PATH, "{}")[0] == 405
     assert announcer.submitted == []
 
 
@@ -266,7 +291,54 @@ def test_query_string_does_not_break_routing(server_factory):
     announcer = FakeAnnouncer()
     server = server_factory(make_config(), announcer)
 
-    status, _ = post(server, PUBLISH_PATH + "?source=ci", '{"type":"msg","content":"hi"}')
+    status, _ = post(server, PUBLISH_PATH + "?source=ci", "hi")
 
     assert status == 202
     assert announcer.submitted == [Msg(content="hi")]
+
+
+def test_queue_returns_playing_and_pending(server_factory):
+    announcer = FakeAnnouncer()
+    announcer.playing = Msg(content="teraz", voice="justyna", repeat_count=2)
+    announcer.submitted = [Msg(content="czeka")]
+    server = server_factory(make_config(), announcer)
+
+    status, body = get(server, QUEUE_PATH)
+
+    assert status == 200
+    assert body == {
+        "playing": {"content": "teraz", "voice": "justyna", "repeat": 2},
+        "pending": [{"content": "czeka", "voice": None, "repeat": 1}],
+    }
+
+
+def test_queue_playing_is_null_when_idle(server_factory):
+    announcer = FakeAnnouncer()
+    server = server_factory(make_config(), announcer)
+
+    status, body = get(server, QUEUE_PATH)
+
+    assert status == 200
+    assert body == {"playing": None, "pending": []}
+
+
+def test_queue_serializes_repeat_envelopes(server_factory):
+    announcer = FakeAnnouncer()
+    announcer.playing = Repeat(number=-1)
+    server = server_factory(make_config(), announcer)
+
+    status, body = get(server, QUEUE_PATH)
+
+    assert status == 200
+    assert body["playing"] == {"replay": -1}
+
+
+def test_queue_requires_auth_when_configured(server_factory):
+    announcer = FakeAnnouncer()
+    server = server_factory(make_config(auth_token="secret"), announcer)
+
+    status, _ = get(server, QUEUE_PATH)
+    assert status == 401
+
+    status, _ = get(server, QUEUE_PATH, headers={"Authorization": "Bearer secret"})
+    assert status == 200

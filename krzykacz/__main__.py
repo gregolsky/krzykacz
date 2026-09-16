@@ -85,7 +85,12 @@ def main() -> None:
         # Binds here on the main thread, so a port clash fails loudly at
         # startup rather than inside the worker thread.
         http_server = build_http_server(
-            cfg.http_host, cfg.http_port, cfg.auth_token, announcer.submit, metadata
+            cfg.http_host,
+            cfg.http_port,
+            cfg.auth_token,
+            announcer.submit,
+            metadata,
+            announcer.snapshot,
         )
         _start_thread("http-server", http_server.serve_forever)
         logger.info("HTTP endpoint listening on %s:%d", cfg.http_host, cfg.http_port)

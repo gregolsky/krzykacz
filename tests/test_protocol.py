@@ -1,80 +1,109 @@
-import json
-
-from krzykacz.protocol import MAX_CONTENT_BYTES, MAX_REPEAT_COUNT, Msg, Repeat, parse, split_effect
-
-
-def test_json_msg():
-    assert parse('{"type":"msg","content":"abc"}') == Msg(content="abc")
-
-
-def test_plain_text_is_msg():
-    assert parse("zwykly tekst bez jsona") == Msg(content="zwykly tekst bez jsona")
+from krzykacz.protocol import (
+    MAX_CONTENT_BYTES,
+    MAX_REPEAT_COUNT,
+    Msg,
+    Repeat,
+    parse,
+    parse_tags,
+    split_effect,
+)
 
 
-def test_repeat_default_number():
-    assert parse('{"type":"repeat"}') == Repeat(number=-1)
+def test_plain_body_no_tags_is_msg():
+    assert parse("zwykly tekst") == Msg(content="zwykly tekst")
 
 
-def test_repeat_explicit_number():
-    assert parse('{"type":"repeat","number":-2}') == Repeat(number=-2)
+def test_body_with_none_tags_is_same_as_no_tags():
+    assert parse("zwykly tekst", None) == Msg(content="zwykly tekst")
 
 
-def test_repeat_invalid_number_falls_back_to_minus_one():
-    assert parse('{"type":"repeat","number":"nope"}') == Repeat(number=-1)
+def test_body_with_empty_tags_is_msg():
+    assert parse("zwykly tekst", []) == Msg(content="zwykly tekst")
 
 
-def test_json_without_type_is_msg_with_raw_body():
-    body = '{"content":"abc"}'
-    assert parse(body) == Msg(content=body)
+def test_voice_tag_sets_voice():
+    assert parse("czesc", ["voice=justyna"]) == Msg(content="czesc", voice="justyna")
 
 
-def test_json_unknown_type_is_msg_with_raw_body():
-    body = '{"type":"unknown"}'
-    assert parse(body) == Msg(content=body)
+def test_repeat_tag_sets_repeat_count():
+    assert parse("czesc", ["repeat=3"]) == Msg(content="czesc", repeat_count=3)
 
 
-def test_msg_without_content_field_is_msg_with_raw_body():
-    body = '{"type":"msg"}'
-    assert parse(body) == Msg(content=body)
+def test_voice_and_repeat_tags_combined():
+    assert parse("czesc", ["voice=justyna", "repeat=2"]) == Msg(
+        content="czesc", voice="justyna", repeat_count=2
+    )
 
 
-def test_invalid_json_is_msg_with_raw_body():
-    body = "{not valid json"
-    assert parse(body) == Msg(content=body)
+def test_replay_tag_produces_repeat_envelope():
+    assert parse("", ["replay=-2"]) == Repeat(number=-2)
 
 
-def test_json_array_is_msg_with_raw_body():
-    body = "[1, 2, 3]"
-    assert parse(body) == Msg(content=body)
+def test_replay_tag_takes_precedence_over_body():
+    assert parse("ignored text", ["replay=-1"]) == Repeat(number=-1)
 
 
-def test_long_msg_content_is_truncated_to_8kb():
+def test_replay_tag_invalid_number_falls_back_to_minus_one():
+    assert parse("", ["replay=nope"]) == Repeat(number=-1)
+
+
+def test_replay_tag_empty_value_falls_back_to_minus_one():
+    assert parse("", ["replay="]) == Repeat(number=-1)
+
+
+def test_tag_without_equals_is_ignored():
+    assert parse("czesc", ["party", "voice=justyna"]) == Msg(content="czesc", voice="justyna")
+
+
+def test_unknown_tag_key_is_ignored():
+    assert parse("czesc", ["color=red"]) == Msg(content="czesc")
+
+
+def test_emoji_tag_is_harmless():
+    assert parse("czesc", ["\U0001f6a8"]) == Msg(content="czesc")
+
+
+def test_parse_tags_splits_key_value():
+    assert parse_tags(["voice=justyna", "repeat=3"]) == {"voice": "justyna", "repeat": "3"}
+
+
+def test_parse_tags_ignores_entries_without_equals():
+    assert parse_tags(["party", "voice=justyna"]) == {"voice": "justyna"}
+
+
+def test_parse_tags_last_occurrence_wins():
+    assert parse_tags(["voice=a", "voice=b"]) == {"voice": "b"}
+
+
+def test_parse_tags_strips_whitespace():
+    assert parse_tags([" voice = justyna "]) == {"voice": "justyna"}
+
+
+def test_parse_tags_none_returns_empty_dict():
+    assert parse_tags(None) == {}
+
+
+def test_parse_tags_empty_iterable_returns_empty_dict():
+    assert parse_tags([]) == {}
+
+
+def test_long_content_is_truncated_to_limit():
     huge = "a" * (MAX_CONTENT_BYTES * 2)
-    body = json.dumps({"type": "msg", "content": huge})
-    result = parse(body)
+    result = parse(huge)
     assert isinstance(result, Msg)
     assert len(result.content.encode("utf-8")) <= MAX_CONTENT_BYTES
     assert result.content == "a" * MAX_CONTENT_BYTES
 
 
-def test_long_plain_text_is_truncated_to_8kb():
-    body = "a" * (MAX_CONTENT_BYTES * 2)
-    result = parse(body)
-    assert isinstance(result, Msg)
-    assert len(result.content.encode("utf-8")) <= MAX_CONTENT_BYTES
-
-
 def test_short_content_is_not_touched():
-    body = json.dumps({"type": "msg", "content": "krotka wiadomosc"})
-    assert parse(body) == Msg(content="krotka wiadomosc")
+    assert parse("krotka wiadomosc") == Msg(content="krotka wiadomosc")
 
 
 def test_truncation_does_not_break_multibyte_utf8():
     # "ą" is 2 bytes in UTF-8; place one right at the boundary to make sure
     # the cut doesn't leave a dangling lead byte that fails to decode.
     huge = "a" * (MAX_CONTENT_BYTES - 1) + "ą" * 10
-    body = json.dumps({"type": "msg", "content": huge})
-    result = parse(body)
+    result = parse(huge)
     assert len(result.content.encode("utf-8")) <= MAX_CONTENT_BYTES
     # Must decode cleanly -- no exception means no dangling byte survived.
     result.content.encode("utf-8").decode("utf-8")
@@ -112,59 +141,41 @@ def test_split_effect_strips_whitespace_in_name():
     assert split_effect("< boom.mp3 > tekst") == ("boom.mp3", "tekst")
 
 
-def test_msg_with_voice_field():
-    body = json.dumps({"type": "msg", "content": "czesc", "voice": "justyna"})
-    assert parse(body) == Msg(content="czesc", voice="justyna")
+def test_voice_tag_with_invalid_type_is_ignored():
+    # parse_tags always yields strings, but build_msg is also called directly
+    # elsewhere (MCP) with non-string values -- make sure those degrade too.
+    from krzykacz.protocol import build_msg
+
+    assert build_msg("czesc", voice=123) == Msg(content="czesc", voice=None)
 
 
-def test_msg_without_voice_field_defaults_to_none():
-    body = json.dumps({"type": "msg", "content": "czesc"})
-    assert parse(body) == Msg(content="czesc", voice=None)
+def test_voice_tag_with_bad_characters_is_ignored():
+    assert parse("czesc", ["voice=../../etc/passwd"]) == Msg(content="czesc", voice=None)
 
 
-def test_msg_with_invalid_voice_type_is_ignored():
-    body = json.dumps({"type": "msg", "content": "czesc", "voice": 123})
-    assert parse(body) == Msg(content="czesc", voice=None)
-
-
-def test_msg_with_voice_containing_bad_characters_is_ignored():
-    body = json.dumps({"type": "msg", "content": "czesc", "voice": "../../etc/passwd"})
-    assert parse(body) == Msg(content="czesc", voice=None)
-
-
-def test_msg_with_too_long_voice_is_ignored():
-    body = json.dumps({"type": "msg", "content": "czesc", "voice": "a" * 100})
-    assert parse(body) == Msg(content="czesc", voice=None)
+def test_voice_tag_too_long_is_ignored():
+    assert parse("czesc", [f"voice={'a' * 100}"]) == Msg(content="czesc", voice=None)
 
 
 def test_plain_text_has_no_voice():
     assert parse("zwykly tekst").voice is None
 
 
-def test_msg_default_repeat_count_is_one():
-    body = json.dumps({"type": "msg", "content": "czesc"})
-    assert parse(body) == Msg(content="czesc", repeat_count=1)
+def test_default_repeat_count_is_one():
+    assert parse("czesc") == Msg(content="czesc", repeat_count=1)
 
 
-def test_msg_with_repeat_count():
-    body = json.dumps({"type": "msg", "content": "czesc", "repeat": 3})
-    assert parse(body) == Msg(content="czesc", repeat_count=3)
+def test_repeat_tag_is_capped_at_max():
+    assert parse("czesc", ["repeat=999"]).repeat_count == MAX_REPEAT_COUNT
 
 
-def test_msg_repeat_count_is_capped_at_max():
-    body = json.dumps({"type": "msg", "content": "czesc", "repeat": 999})
-    assert parse(body).repeat_count == MAX_REPEAT_COUNT
-
-
-def test_msg_repeat_count_zero_or_negative_falls_back_to_one():
+def test_repeat_tag_zero_or_negative_falls_back_to_one():
     for value in (0, -5):
-        body = json.dumps({"type": "msg", "content": "czesc", "repeat": value})
-        assert parse(body).repeat_count == 1
+        assert parse("czesc", [f"repeat={value}"]).repeat_count == 1
 
 
-def test_msg_repeat_count_non_numeric_falls_back_to_one():
-    body = json.dumps({"type": "msg", "content": "czesc", "repeat": "dużo"})
-    assert parse(body).repeat_count == 1
+def test_repeat_tag_non_numeric_falls_back_to_one():
+    assert parse("czesc", ["repeat=duzo"]).repeat_count == 1
 
 
 def test_plain_text_has_default_repeat_count():

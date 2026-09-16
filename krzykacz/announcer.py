@@ -5,11 +5,20 @@ import queue
 import threading
 from collections import deque
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Dict, Optional
 
 from .effects import Effects
 from .light import Light
-from .protocol import REPEAT_SEPARATOR, Envelope, Msg, Repeat, preview, split_effect
+from .protocol import (
+    MAX_SPOKEN_BYTES,
+    REPEAT_SEPARATOR,
+    Envelope,
+    Msg,
+    Repeat,
+    _truncate,
+    preview,
+    split_effect,
+)
 from .tts import Tts
 
 logger = logging.getLogger(__name__)
@@ -54,10 +63,19 @@ class Announcer:
         self._assets_dir = Path(assets_dir).resolve()
         self._queue: "queue.Queue[Envelope]" = queue.Queue(maxsize=queue_size)
         self._history: "deque[Msg]" = deque(maxlen=history_size)
+        self._current: Optional[Envelope] = None
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self) -> None:
         self._thread.start()
+
+    def snapshot(self) -> Dict[str, object]:
+        """Returns what's currently playing (or None if idle) and what's
+        still waiting -- used by GET /v1/queue. queue.Queue has no safe
+        public iteration, hence locking its mutex to read the raw deque."""
+        with self._queue.mutex:
+            pending = list(self._queue.queue)
+        return {"playing": self._current, "pending": pending}
 
     def submit(self, envelope: Envelope) -> bool:
         try:
@@ -73,11 +91,13 @@ class Announcer:
     def _run(self) -> None:
         while True:
             envelope = self._queue.get()
+            self._current = envelope
             try:
                 self._handle(envelope)
             except Exception:
                 logger.exception("Failed to handle %r", envelope)
             finally:
+                self._current = None
                 self._queue.task_done()
 
     def _handle(self, envelope: Envelope) -> None:
@@ -110,6 +130,7 @@ class Announcer:
             spoken = _with_terminal_punctuation(spoken)
             if msg.repeat_count > 1:
                 spoken = REPEAT_SEPARATOR.join([spoken] * msg.repeat_count)
+                spoken = _truncate(spoken, MAX_SPOKEN_BYTES)
             try:
                 logger.info(
                     "Synthesizing (voice=%s, repeats=%d): %s",

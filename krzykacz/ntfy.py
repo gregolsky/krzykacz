@@ -6,7 +6,7 @@ import time
 import requests
 
 from .announcer import Submit
-from .protocol import parse, preview
+from .protocol import parse, parse_tags, preview
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +53,15 @@ def _handle_line(line: bytes, on_message: Submit) -> None:
     if kind != "message":
         logger.debug("ntfy stream event: %s", kind)
         return
-    body = event.get("message")
-    if not body:
+    body = event.get("message") or ""
+    tags = event.get("tags")
+    # A `replay` request carries no meaningful body, so an empty message is
+    # only dropped when it's not one of those.
+    if not body and "replay" not in parse_tags(tags):
         return
-    logger.info("Received from ntfy: %s", preview(body))
+    logger.info("Received from ntfy: %s", preview(body) if body else "(replay)")
     try:
-        envelope = parse(body)
+        envelope = parse(body, tags)
     except Exception:
         logger.exception("Failed to parse message body: %r", body)
         return

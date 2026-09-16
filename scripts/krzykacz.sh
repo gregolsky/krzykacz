@@ -83,24 +83,22 @@ if [ -z "$TOPIC" ]; then
     exit 1
 fi
 
-if ! command -v jq >/dev/null 2>&1; then
-    echo "Error: this script requires jq (for safe JSON encoding)" >&2
-    exit 1
-fi
-
 CONTENT="$MESSAGE"
 if [ -n "$EFFECT" ]; then
     CONTENT="<$EFFECT> $MESSAGE"
 fi
 
-PAYLOAD="$(jq -n \
-    --arg content "$CONTENT" \
-    --arg voice "$VOICE" \
-    --arg repeat "$REPEAT" \
-    '{type: "msg", content: $content}
-     + (if $voice != "" then {voice: $voice} else {} end)
-     + (if $repeat != "" then {repeat: ($repeat | tonumber)} else {} end)'
-)"
+TAGS=""
+if [ -n "$VOICE" ]; then
+    TAGS="voice=$VOICE"
+fi
+if [ -n "$REPEAT" ]; then
+    TAGS="${TAGS:+$TAGS,}repeat=$REPEAT"
+fi
 
-curl -fsS -d "$PAYLOAD" "$SERVER/$TOPIC"
+if [ -n "$TAGS" ]; then
+    curl -fsS -H "Tags: $TAGS" -d "$CONTENT" "$SERVER/$TOPIC"
+else
+    curl -fsS -d "$CONTENT" "$SERVER/$TOPIC"
+fi
 echo

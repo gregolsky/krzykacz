@@ -1,14 +1,19 @@
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Optional, Tuple, Union
+from typing import Dict, Iterable, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
-MAX_CONTENT_BYTES = 8192
+MAX_CONTENT_BYTES = 800
+
+# Cap on the fully-joined text after `repeat` duplication -- without this,
+# repeat=10 on a near-MAX_CONTENT_BYTES message is ~9 minutes of audio again,
+# defeating the point of shrinking MAX_CONTENT_BYTES. Applied in
+# Announcer._announce, after REPEAT_SEPARATOR.join(...).
+MAX_SPOKEN_BYTES = 1600
 
 _EFFECT_TAG_RE = re.compile(r"^<([^<>]+)>\s*(.*)$", re.DOTALL)
 
@@ -80,8 +85,8 @@ def _clean_repeat_count(value: object) -> int:
 
 def build_msg(content: str, voice: object = None, repeat: object = None) -> Msg:
     """Builds a validated Msg from already-typed fields (as opposed to
-    `parse`, which extracts them from a raw JSON body) -- used by the
-    HTTP/MCP endpoints, which receive typed arguments directly."""
+    `parse`, which extracts them from a raw body + tags) -- used by the
+    MCP endpoint, which receives typed arguments directly."""
     return Msg(
         content=_truncate(content),
         voice=_clean_voice(voice),
@@ -97,35 +102,41 @@ def build_repeat(number: object) -> Repeat:
     return Repeat(number=number)
 
 
-def parse(body: str) -> Envelope:
-    """Parse an ntfy message body into an Envelope.
+def parse_tags(tags: Optional[Iterable[str]]) -> Dict[str, str]:
+    """Extracts "key=value" entries from ntfy tags into a dict. ntfy also
+    uses tags for plain emoji/text markers, so entries without "=" are
+    ignored rather than treated as an error. When a key appears more than
+    once, the last occurrence wins."""
+    params: Dict[str, str] = {}
+    if not tags:
+        return params
+    for tag in tags:
+        if not isinstance(tag, str) or "=" not in tag:
+            continue
+        key, _, value = tag.partition("=")
+        params[key.strip()] = value.strip()
+    return params
 
-    Body is expected to be JSON like {"type": "msg", "content": "..."} or
-    {"type": "repeat", "number": -1}. Anything else (plain text, invalid
-    JSON, JSON without a recognized "type") is treated as a plain message
-    whose content is the raw body. Content longer than MAX_CONTENT_BYTES is
-    truncated -- this is meant to be read aloud, not archived.
+
+def parse(body: str, tags: Optional[Iterable[str]] = None) -> Envelope:
+    """Parse a krzykacz message: `body` is the literal text to speak (or
+    empty, for a `replay` request), and `tags` carries parameters as
+    "key=value" entries (see parse_tags). Parameters travel in ntfy's `Tags`
+    header/field rather than the body, because ntfy does not forward
+    arbitrary custom HTTP headers to subscribers -- `tags` is one of the few
+    fields that does survive.
+
+    Recognized keys: `voice` and `repeat` (see build_msg), and `replay` (a
+    history index to replay instead of speaking `body`, see build_repeat).
+    Content longer than MAX_CONTENT_BYTES is truncated -- this is meant to be
+    read aloud, not archived.
     """
-    try:
-        data = json.loads(body)
-    except (json.JSONDecodeError, ValueError):
-        return Msg(content=_truncate(body))
+    params = parse_tags(tags)
 
-    if not isinstance(data, dict):
-        return Msg(content=_truncate(body))
+    if "replay" in params:
+        return build_repeat(params["replay"])
 
-    kind = data.get("type")
-
-    if kind == "repeat":
-        return build_repeat(data.get("number", -1))
-
-    if kind == "msg":
-        content = data.get("content")
-        if not isinstance(content, str):
-            return Msg(content=_truncate(body))
-        return build_msg(content, voice=data.get("voice"), repeat=data.get("repeat"))
-
-    return Msg(content=_truncate(body))
+    return build_msg(body, voice=params.get("voice"), repeat=params.get("repeat"))
 
 
 def split_effect(content: str) -> Tuple[Optional[str], str]:

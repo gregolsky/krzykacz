@@ -5,20 +5,30 @@ aloud in Polish 🗣️ (Piper TTS) through the audio jack 🔊.
 
 ## Protocol 📡
 
-ntfy message body:
+The ntfy message body is the literal text to read aloud. Parameters (voice,
+repeat count, replay) ride in the `Tags` header as `key=value` entries, not in
+the body -- ntfy does **not** forward arbitrary custom HTTP headers to
+subscribers, but `Tags` is one of the documented fields that does survive:
 
-```json
-{"type": "msg", "content": "text to read aloud", "voice": "justyna"}
-{"type": "repeat", "number": -1}
+```bash
+curl -H "Tags: voice=justyna,repeat=2" -d "Testy padły" https://ntfy.sh/<your-topic>
 ```
 
-`repeat.number` is an index into the last 10 messages (`-1` = most recent,
-`-2` = second most recent). Plain text without JSON is treated as the `content`
-of a message.
+Recognized keys:
 
-`voice` is optional (allowed characters: letters, digits, `-`, `_`, max 64 chars) --
-selects a Piper voice by name from `KRZYKACZ_PIPER_VOICES`. A missing field or
-unknown name falls back to the default voice (`KRZYKACZ_PIPER_DEFAULT_VOICE`).
+| Key | Meaning |
+|---|---|
+| `voice=<name>` | Piper voice name (see table below) |
+| `repeat=<n>` | speak the body `n` times, separated by `" Powtarzam! "` ("Repeating!"), capped at 10 (`MAX_REPEAT_COUNT`) |
+| `replay=<index>` | replay message `<index>` from the last 10 messages instead of speaking the body (`-1` = most recent, `-2` = second most recent); the body is ignored when this is set |
+
+Tags without `=` (ntfy also uses tags for plain emoji/text markers) and
+unrecognized keys are ignored. A body with no `Tags` header at all is spoken
+as plain text with the default voice, spoken once.
+
+`voice` (allowed characters: letters, digits, `-`, `_`, max 64 chars) selects a
+Piper voice by name from `KRZYKACZ_PIPER_VOICES`. A missing tag or unknown
+name falls back to the default voice (`KRZYKACZ_PIPER_DEFAULT_VOICE`).
 
 Supported `voice` values in the default configuration (see "Piper voices" below):
 
@@ -39,34 +49,30 @@ voice (with a warning in the log). The `espeak` backend (`KRZYKACZ_TTS=espeak`)
 doesn't know these names -- there, `voice` is passed straight through as an
 `espeak-ng` language/voice code (e.g. `pl`, `en`).
 
-If `content` starts with `<filename>`, a file of that name is played from
+If the body starts with `<filename>`, a file of that name is played from
 `KRZYKACZ_ASSETS_DIR` before the rest of the text is read (any format `ffmpeg`
 can decode -- mp3, ogg, wav, ...), e.g.:
 
-```json
-{"type": "msg", "content": "<boom.mp3> Tests failed"}
+```bash
+curl -d "<boom.mp3> Tests failed" https://ntfy.sh/<your-topic>
 ```
 
 The filename can't contain `/` or `..` (protects against escaping the assets
 directory). A missing effect file doesn't block reading the text -- the effect
 is simply skipped.
 
-`repeat` (optional, integer) repeats `content` that many times, inserting
-`" Powtarzam! "` ("Repeating!") between copies. A missing field, a value `<= 1`,
-or a non-numeric value leaves it unchanged (spoken once). The value is capped at
-10 (`MAX_REPEAT_COUNT`) -- this is meant as an emphasis knob, not a way to force
-minutes of playback. It only applies to the spoken part -- a sound effect from
-`<file>` still plays once, before the repetitions.
+A message longer than 800 bytes (`MAX_CONTENT_BYTES`, roughly a minute of
+speech) is truncated -- this is meant to be read aloud on the spot, not
+archived. The fully-joined text after `repeat` duplication is separately
+capped at 1600 bytes (`MAX_SPOKEN_BYTES`), so a high `repeat` on a long message
+can't run for minutes either.
 
 ### Full example
 
 ```bash
-curl -d '{
-  "type": "msg",
-  "content": "<interface-sounds_error_001.ogg> Tests failed",
-  "voice": "justyna",
-  "repeat": 2
-}' https://ntfy.sh/<your-topic>
+curl -H "Tags: voice=justyna,repeat=2" \
+  -d "<interface-sounds_error_001.ogg> Tests failed" \
+  https://ntfy.sh/<your-topic>
 ```
 
 The `interface-sounds_error_001.ogg` effect plays once, then, in the `justyna`
@@ -74,8 +80,7 @@ voice: "Tests failed. Powtarzam! Tests failed."
 
 ### Sending from the command line ⌨️
 
-`scripts/krzykacz.sh` wraps the protocol above so you don't have to hand-write
-JSON. Requires `jq`.
+`scripts/krzykacz.sh` wraps the protocol above.
 
 ```bash
 export KRZYKACZ_TOPIC=<your-topic>
@@ -107,17 +112,36 @@ Set `KRZYKACZ_HTTP_ENABLED=1`. The HTTP API is versioned under `/v1`.
 
 #### `POST /v1/publish`
 
-Accepts the exact same JSON body as the ntfy protocol above:
+Accepts the exact same body+`Tags` shape as the ntfy protocol above:
 
 ```bash
 curl -H "Authorization: Bearer <token>" \
-  -d '{"type": "msg", "content": "hello", "voice": "justyna"}' \
+  -H "Tags: voice=justyna" \
+  -d "hello" \
   http://192.168.1.50:8123/v1/publish
 ```
 
 Responds `202 {"status": "queued"}`, or `503 {"status": "dropped"}` if the
 announcer's queue is full (see `KRZYKACZ_QUEUE_SIZE`), or `401` if the
 token is missing/wrong.
+
+#### `GET /v1/queue`
+
+Reports what's currently playing and what's still waiting behind it:
+
+```bash
+curl -H "Authorization: Bearer <token>" http://192.168.1.50:8123/v1/queue
+```
+
+```json
+{
+  "playing": {"content": "Uwaga, obiad gotowy", "voice": "justyna", "repeat": 1},
+  "pending": [{"content": "Backup zakonczony", "voice": null, "repeat": 1}]
+}
+```
+
+`playing` is `null` when the announcer is idle. A queued `replay` request
+serializes as `{"replay": -1}` instead of `content`/`voice`/`repeat`.
 
 #### `GET /v1/metadata`
 
@@ -216,7 +240,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 | `KRZYKACZ_ASSETS_DIR` | `/var/lib/krzykacz/assets` | directory holding sound effect files |
 | `KRZYKACZ_HISTORY` | `10` | how many recent messages to keep in memory |
 | `KRZYKACZ_QUEUE_SIZE` | `10` | max number of messages waiting to be played; anything beyond that is dropped (with a log warning) rather than queued indefinitely |
-| `KRZYKACZ_HTTP_ENABLED` | `0` | set to `1` to enable the HTTP endpoints (`POST /v1/publish`, `GET /v1/metadata`) |
+| `KRZYKACZ_HTTP_ENABLED` | `0` | set to `1` to enable the HTTP endpoints (`POST /v1/publish`, `GET /v1/metadata`, `GET /v1/queue`) |
 | `KRZYKACZ_HTTP_HOST` | `0.0.0.0` | HTTP endpoint bind address |
 | `KRZYKACZ_HTTP_PORT` | `8123` | HTTP endpoint port |
 | `KRZYKACZ_MCP_ENABLED` | `0` | set to `1` to enable the MCP endpoint (requires `pip install mcp`, Python >= 3.10) |

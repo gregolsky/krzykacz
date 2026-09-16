@@ -3,7 +3,7 @@ import threading
 from krzykacz.announcer import NO_SUCH_MESSAGE, Announcer, _with_terminal_punctuation
 from krzykacz.effects import Effects
 from krzykacz.light import Light
-from krzykacz.protocol import Msg, Repeat
+from krzykacz.protocol import MAX_SPOKEN_BYTES, Msg, Repeat
 from krzykacz.tts import Tts
 
 
@@ -369,3 +369,53 @@ def test_effect_plays_after_light_on_and_before_speech(tmp_path):
     assert synth_idx < first_light_on_idx
     assert first_light_on_idx < effect_idx < play_idx
     assert play_idx < last_off_idx
+
+
+def test_repeat_count_is_truncated_to_max_spoken_bytes(tmp_path):
+    tts = FakeTts()
+    announcer = make_announcer(tmp_path, tts=tts)
+    announcer.start()
+
+    announcer.submit(Msg(content="a" * 500, repeat_count=10))
+    drain(announcer)
+
+    assert len(tts.said) == 1
+    assert len(tts.said[0].encode("utf-8")) <= MAX_SPOKEN_BYTES
+
+
+def test_snapshot_shows_pending_and_playing_while_worker_is_blocked(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingLight(Light):
+        def on(self):
+            started.set()
+            release.wait(timeout=5)
+
+        def off(self):
+            pass
+
+    announcer = make_announcer(tmp_path, light=BlockingLight())
+    announcer.start()
+
+    announcer.submit(Msg(content="one"))
+    assert started.wait(timeout=2), "worker never started processing the first message"
+    announcer.submit(Msg(content="two"))
+
+    snapshot = announcer.snapshot()
+
+    release.set()
+    drain(announcer)
+
+    assert snapshot["playing"] == Msg(content="one")
+    assert snapshot["pending"] == [Msg(content="two")]
+
+
+def test_snapshot_is_idle_after_draining(tmp_path):
+    announcer = make_announcer(tmp_path)
+    announcer.start()
+
+    announcer.submit(Msg(content="one"))
+    drain(announcer)
+
+    assert announcer.snapshot() == {"playing": None, "pending": []}

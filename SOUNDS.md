@@ -4,8 +4,8 @@ Pełna lista plików dostępnych po uruchomieniu `scripts/download_effects.sh` -
 
 Użycie w wiadomości (przykład):
 
-```json
-{"type": "msg", "content": "<interface-sounds_error_001.ogg> Coś się zepsuło"}
+```bash
+curl -d "<interface-sounds_error_001.ogg> Coś się zepsuło" https://ntfy.sh/<topic>
 ```
 
 Źródło: [kenney.nl](https://kenney.nl), licencja CC0. Cztery paczki, 345 plików łącznie.

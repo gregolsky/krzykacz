@@ -5,10 +5,14 @@ class FakeAnnouncer:
     def __init__(self, accept=True):
         self.submitted = []
         self._accept = accept
+        self.playing = None
 
     def submit(self, envelope):
         self.submitted.append(envelope)
         return self._accept
+
+    def snapshot(self):
+        return {"playing": self.playing, "pending": list(self.submitted)}
 
 
 def make_config(**overrides):
