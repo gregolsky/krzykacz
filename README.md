@@ -71,11 +71,11 @@ can't run for minutes either.
 
 ```bash
 curl -H "Tags: voice=justyna,repeat=2" \
-  -d "<interface-sounds_error_001.ogg> Tests failed" \
+  -d "<game_over> Tests failed" \
   https://ntfy.sh/<your-topic>
 ```
 
-The `interface-sounds_error_001.ogg` effect plays once, then, in the `justyna`
+The `game_over` effect plays once, then, in the `justyna`
 voice: "Tests failed. Powtarzam! Tests failed."
 
 ### Sending from the command line ⌨️
@@ -86,7 +86,7 @@ voice: "Tests failed. Powtarzam! Tests failed."
 export KRZYKACZ_TOPIC=<your-topic>
 ./scripts/krzykacz.sh "Backup finished"
 ./scripts/krzykacz.sh --voice justyna --repeat 2 "Tests failed"
-./scripts/krzykacz.sh --effect interface-sounds_error_001.ogg "Something broke"
+./scripts/krzykacz.sh --effect game_over "Something broke"
 ./scripts/krzykacz.sh --topic other-topic --server https://ntfy.example.com "Hello"
 ```
 
@@ -158,7 +158,7 @@ curl -H "Authorization: Bearer <token>" http://192.168.1.50:8123/v1/metadata
   "tts": "piper",
   "voices": ["darkman", "justyna", "jarvis", "meski", "zenski", "gosia", "bass", "mc_speech"],
   "default_voice": "darkman",
-  "effects": ["digital-audio_alarm_001.ogg", "interface-sounds_error_001.ogg", "..."]
+  "effects": ["fight", "game_over", "bark01", "8bit00", "..."]
 }
 ```
 
@@ -276,13 +276,17 @@ paths in `KRZYKACZ_PIPER_MODEL` / `KRZYKACZ_PIPER_VOICES` above.
 
 ## Sound effects (CC0) 💥
 
-Four packs from [kenney.nl](https://kenney.nl) (CC0 license -- public domain, no
-attribution required): `interface-sounds`, `ui-audio`, `digital-audio`,
-`impact-sounds`. 345 `.ogg` files total -- full list of names in
-[`SOUNDS.md`](SOUNDS.md).
+Three packs, all CC0 (public domain, no attribution required): the Voiceover
+Pack (Fighter) and Music Jingles from [kenney.nl](https://kenney.nl), and
+[80 CC0 creature SFX](https://opengameart.org/content/80-cc0-creature-sfx) by
+rubberduck on OpenGameArt. 211 `.ogg` files total, stored **without an
+extension** so the tag you type is short -- `<fight>`, `<8bit00>`, `<bark01>`.
+Full list of names in [`SOUNDS.md`](SOUNDS.md), or read live from
+`GET /v1/metadata`'s `effects` field.
 
 Download (idempotent, copies files without conversion -- `KRZYKACZ_EFFECTS=ffmpeg`
-plays any format `ffmpeg` can decode):
+plays any format `ffmpeg` can decode; reruns also prune sounds from packs this
+script no longer installs):
 
 ```bash
 ./scripts/download_effects.sh
@@ -291,9 +295,8 @@ plays any format `ffmpeg` can decode):
 ```
 
 The default target directory is `/var/lib/krzykacz/assets`, matching the default
-`KRZYKACZ_ASSETS_DIR` above. Each file on disk is named `<pack>_<original-name>`,
-e.g. `interface-sounds_error_001.ogg` -- that's exactly the name you put in the
-`<...>` tag.
+`KRZYKACZ_ASSETS_DIR` above. Any file you drop into that directory by hand also
+becomes usable in a `<...>` tag under its own filename.
 
 ## Local testing (no hardware) 🧪
 

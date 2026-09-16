@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# Downloads a few CC0 sound effect packs from kenney.nl and unpacks the
-# sound files (as-is -- ogg/wav, no conversion needed since krzykacz plays
-# anything ffmpeg can decode) into the krzykacz assets directory.
+# Downloads a few CC0 sound effect packs and unpacks the sound files (as-is --
+# ogg, no conversion needed since krzykacz plays anything ffmpeg can decode)
+# into the krzykacz assets directory, renamed to short soundboard-style names
+# (no extension -- <fight> rather than <voiceover-fighter_fight.ogg>).
 # Idempotent -- skips any file that's already there, so it's safe to rerun.
+# Also prunes files from packs this script used to install, so switching the
+# PACKS list doesn't leave orphaned sounds behind.
+#
+# Sources: kenney.nl (Voiceover Pack Fighter, Music Jingles) and
+# opengameart.org (80 CC0 creature SFX by rubberduck). All CC0.
 #
 # Requires: curl, unzip.
 set -euo pipefail
@@ -13,13 +19,49 @@ mkdir -p "$DEST"
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
-# name -> zip URL. All from kenney.nl, all CC0 (https://kenney.nl/assets/<name> -> License: Creative Commons CC0).
 declare -A PACKS=(
-    [interface-sounds]="https://kenney.nl/media/pages/assets/interface-sounds/fa43c1dd4d-1677589452/kenney_interface-sounds.zip"
-    [ui-audio]="https://kenney.nl/media/pages/assets/ui-audio/490d233f68-1677590494/kenney_ui-audio.zip"
-    [digital-audio]="https://kenney.nl/media/pages/assets/digital-audio/216eac4753-1677590265/kenney_digital-audio.zip"
-    [impact-sounds]="https://kenney.nl/media/pages/assets/impact-sounds/87b4ddecda-1677589768/kenney_impact-sounds.zip"
+    [fighter]="https://kenney.nl/media/pages/assets/voiceover-pack-fighter/6ceb77c6f1-1677589837/kenney_voiceover-pack-fighter.zip"
+    [jingles]="https://kenney.nl/media/pages/assets/music-jingles/f37e530b9e-1677590399/kenney_music-jingles.zip"
+    [creature]="https://opengameart.org/sites/default/files/80-CC0-creature-SFX_0.zip"
 )
+
+# Prefixes from packs this script no longer installs -- removed so a rerun
+# after switching PACKS doesn't leave the old sounds stranded. Scoped to
+# these exact prefixes (not a blanket wipe of $DEST) so any sound a user
+# dropped in by hand is never touched.
+RETIRED_PREFIXES=(interface-sounds_ ui-audio_ digital-audio_ impact-sounds_)
+
+for prefix in "${RETIRED_PREFIXES[@]}"; do
+    for f in "$DEST/$prefix"*; do
+        [ -e "$f" ] || continue
+        echo "removing retired effect: $(basename "$f")"
+        rm -f "$f"
+    done
+done
+
+# Maps a pack's original file stem (basename without extension) to a short
+# soundboard name. Falls back to the stem itself, lowercased, for anything
+# the per-pack rules don't touch.
+rename_for_pack() {
+    local pack="$1" stem="$2"
+    case "$pack" in
+        fighter)
+            stem="$(tr 'A-Z' 'a-z' <<<"$stem" | tr -d "'")"
+            if [[ "$stem" =~ ^[0-9]+$ ]]; then
+                printf 'count%02d' "$stem"
+                return
+            fi
+            ;;
+        jingles)
+            stem="$(sed 's/^jingles_//' <<<"$stem" | tr 'A-Z' 'a-z')"
+            stem="$(sed -e 's/^nes/8bit/' -e 's/^pizzi/pizz/' <<<"$stem")"
+            ;;
+        creature)
+            stem="$(sed -e 's/^barking/bark/' -e 's/_\([0-9]\)/\1/' <<<"$stem")"
+            ;;
+    esac
+    printf '%s' "$stem"
+}
 
 for pack in "${!PACKS[@]}"; do
     url="${PACKS[$pack]}"
@@ -30,11 +72,18 @@ for pack in "${!PACKS[@]}"; do
     extract_dir="$WORKDIR/$pack"
     unzip -q "$zip_path" -d "$extract_dir"
 
-    # Sound files live under an "Audio/" (or similarly cased) subfolder in
-    # every Kenney pack; find them regardless of exact nesting/casing.
-    mapfile -d '' -t sources < <(find "$extract_dir" \( -iname '*.ogg' -o -iname '*.wav' \) -print0)
+    # Sound files live under an "Audio/" (or similarly cased) subfolder;
+    # find them regardless of exact nesting/casing. Preview* files are pack
+    # demo reels bundled by the source, not effects -- skip them.
+    mapfile -d '' -t sources < <(
+        find "$extract_dir" \( -iname '*.ogg' -o -iname '*.wav' \) \
+            ! -iname 'preview*' -print0
+    )
     for src in "${sources[@]}"; do
-        out="$DEST/${pack}_$(basename "$src")"
+        stem="$(basename "$src")"
+        stem="${stem%.*}"
+        name="$(rename_for_pack "$pack" "$stem")"
+        out="$DEST/$name"
         if [ -s "$out" ]; then
             continue
         fi

@@ -25,7 +25,7 @@ Options:
 Examples:
   $(basename "$0") "Backup finished"
   $(basename "$0") --voice justyna --repeat 2 "Tests failed"
-  $(basename "$0") --effect interface-sounds_error_001.ogg "Something broke"
+  $(basename "$0") --effect game_over "Something broke"
   $(basename "$0") --topic other-topic "Hello from another topic"
 EOF
 }
