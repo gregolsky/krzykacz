@@ -4,8 +4,6 @@
 # into the krzykacz assets directory, renamed to short soundboard-style names
 # (no extension -- <fight> rather than <voiceover-fighter_fight.ogg>).
 # Idempotent -- skips any file that's already there, so it's safe to rerun.
-# Also prunes files from packs this script used to install, so switching the
-# PACKS list doesn't leave orphaned sounds behind.
 #
 # Sources: kenney.nl (Voiceover Pack Fighter, Music Jingles) and
 # opengameart.org (80 CC0 creature SFX by rubberduck). All CC0.
@@ -24,20 +22,6 @@ declare -A PACKS=(
     [jingles]="https://kenney.nl/media/pages/assets/music-jingles/f37e530b9e-1677590399/kenney_music-jingles.zip"
     [creature]="https://opengameart.org/sites/default/files/80-CC0-creature-SFX_0.zip"
 )
-
-# Prefixes from packs this script no longer installs -- removed so a rerun
-# after switching PACKS doesn't leave the old sounds stranded. Scoped to
-# these exact prefixes (not a blanket wipe of $DEST) so any sound a user
-# dropped in by hand is never touched.
-RETIRED_PREFIXES=(interface-sounds_ ui-audio_ digital-audio_ impact-sounds_)
-
-for prefix in "${RETIRED_PREFIXES[@]}"; do
-    for f in "$DEST/$prefix"*; do
-        [ -e "$f" ] || continue
-        echo "removing retired effect: $(basename "$f")"
-        rm -f "$f"
-    done
-done
 
 # Maps a pack's original file stem (basename without extension) to a short
 # soundboard name. Falls back to the stem itself, lowercased, for anything

@@ -285,8 +285,7 @@ Full list of names in [`SOUNDS.md`](SOUNDS.md), or read live from
 `GET /v1/metadata`'s `effects` field.
 
 Download (idempotent, copies files without conversion -- `KRZYKACZ_EFFECTS=ffmpeg`
-plays any format `ffmpeg` can decode; reruns also prune sounds from packs this
-script no longer installs):
+plays any format `ffmpeg` can decode):
 
 ```bash
 ./scripts/download_effects.sh
