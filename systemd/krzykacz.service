@@ -15,10 +15,18 @@ ExecStart=/opt/krzykacz/venv/bin/python -m krzykacz
 Restart=always
 RestartSec=5
 
-# Hardening. The service needs no write access anywhere (journald handles
-# logs, models/assets are read-only) -- uhubctl and aplay are the only
-# privileged-looking operations, and both work unprivileged via the
-# `krzykacz` group (udev rule + audio group, see scripts/install-service.sh).
+# The only writable path the service gets: systemd creates
+# /var/cache/krzykacz owned by User=/Group= and keeps it writable despite
+# ProtectSystem=strict below. Holds synthesized audio (KRZYKACZ_CACHE_DIR);
+# safe to delete at any time, it's rebuilt on demand.
+CacheDirectory=krzykacz
+CacheDirectoryMode=0700
+
+# Hardening. Apart from that cache directory the service needs no write
+# access anywhere (journald handles logs, models/assets are read-only) --
+# uhubctl and aplay are the only privileged-looking operations, and both
+# work unprivileged via the `krzykacz` group (udev rule + audio group, see
+# scripts/install-service.sh).
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=

@@ -24,12 +24,26 @@ _VOICE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 MAX_REPEAT_COUNT = 10
 REPEAT_SEPARATOR = " Powtarzam! "
 
+# Accepted ranges for the three synthesis knobs. Out-of-range values are
+# clamped rather than rejected (same spirit as `repeat`). `speed` is capped
+# at 0.5 rather than something lower because it multiplies playback length:
+# MAX_CONTENT_BYTES/MAX_SPOKEN_BYTES bound how much *text* is spoken, so
+# without this an otherwise legal message could still run for minutes.
+SPEED_RANGE = (0.5, 2.0)
+VARIATION_RANGE = (0.0, 1.5)
+RHYTHM_RANGE = (0.0, 1.5)
+
 
 @dataclass(frozen=True)
 class Msg:
     content: str
     voice: Optional[str] = None
     repeat_count: int = 1
+    # None means "whatever this instance is configured to use" -- see
+    # krzykacz.tts.Prosody.
+    speed: Optional[float] = None
+    variation: Optional[float] = None
+    rhythm: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -83,7 +97,29 @@ def _clean_repeat_count(value: object) -> int:
     return min(count, MAX_REPEAT_COUNT)
 
 
-def build_msg(content: str, voice: object = None, repeat: object = None) -> Msg:
+def clean_scale(value: object, bounds: Tuple[float, float]) -> Optional[float]:
+    """Validates one of the synthesis knobs (`speed`, `variation`,
+    `rhythm`): a float, clamped into `bounds`. Missing or non-numeric yields
+    None, meaning "leave this instance's configured value alone" -- same
+    never-fail-the-message approach as `_clean_voice`."""
+    if value is None:
+        return None
+    try:
+        scale = float(value)
+    except (TypeError, ValueError):
+        return None
+    low, high = bounds
+    return min(max(scale, low), high)
+
+
+def build_msg(
+    content: str,
+    voice: object = None,
+    repeat: object = None,
+    speed: object = None,
+    variation: object = None,
+    rhythm: object = None,
+) -> Msg:
     """Builds a validated Msg from already-typed fields (as opposed to
     `parse`, which extracts them from a raw body + tags) -- used by the
     MCP endpoint, which receives typed arguments directly."""
@@ -91,6 +127,9 @@ def build_msg(content: str, voice: object = None, repeat: object = None) -> Msg:
         content=_truncate(content),
         voice=_clean_voice(voice),
         repeat_count=_clean_repeat_count(repeat),
+        speed=clean_scale(speed, SPEED_RANGE),
+        variation=clean_scale(variation, VARIATION_RANGE),
+        rhythm=clean_scale(rhythm, RHYTHM_RANGE),
     )
 
 
@@ -126,17 +165,25 @@ def parse(body: str, tags: Optional[Iterable[str]] = None) -> Envelope:
     arbitrary custom HTTP headers to subscribers -- `tags` is one of the few
     fields that does survive.
 
-    Recognized keys: `voice` and `repeat` (see build_msg), and `replay` (a
-    history index to replay instead of speaking `body`, see build_repeat).
-    Content longer than MAX_CONTENT_BYTES is truncated -- this is meant to be
-    read aloud, not archived.
+    Recognized keys: `voice`, `repeat`, `speed`, `variation` and `rhythm`
+    (see build_msg), and `replay` (a history index to replay instead of
+    speaking `body`, see build_repeat). Content longer than
+    MAX_CONTENT_BYTES is truncated -- this is meant to be read aloud, not
+    archived.
     """
     params = parse_tags(tags)
 
     if "replay" in params:
         return build_repeat(params["replay"])
 
-    return build_msg(body, voice=params.get("voice"), repeat=params.get("repeat"))
+    return build_msg(
+        body,
+        voice=params.get("voice"),
+        repeat=params.get("repeat"),
+        speed=params.get("speed"),
+        variation=params.get("variation"),
+        rhythm=params.get("rhythm"),
+    )
 
 
 def split_effect(content: str) -> Tuple[Optional[str], str]:

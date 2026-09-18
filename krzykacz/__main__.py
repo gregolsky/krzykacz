@@ -9,9 +9,10 @@ from .config import Config
 from .effects import Effects, FfmpegEffects, NullEffects
 from .http_server import build_http_server
 from .light import Light, NullLight, UhubctlLight
-from .metadata import describe
+from .metadata import Describers, describe_effects, describe_limits, describe_voices
 from .ntfy import listen
-from .tts import EspeakTts, PiperTts, Tts
+from .ratelimit import IpRateLimiter
+from .tts import CachedTts, EspeakTts, PiperTts, Tts
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +41,17 @@ def build_light(cfg: Config) -> Light:
 
 def build_tts(cfg: Config) -> Tts:
     if cfg.tts_backend == "piper":
-        return PiperTts(cfg.piper_voices, cfg.piper_default_voice, cfg.alsa_device)
-    if cfg.tts_backend == "espeak":
-        return EspeakTts(cfg.espeak_voice, cfg.alsa_device)
-    raise ValueError(f"Unknown KRZYKACZ_TTS backend: {cfg.tts_backend!r}")
+        tts: Tts = PiperTts(
+            cfg.piper_voices, cfg.piper_default_voice, cfg.alsa_device, prosody=cfg.prosody
+        )
+    elif cfg.tts_backend == "espeak":
+        tts = EspeakTts(cfg.espeak_voice, cfg.alsa_device, prosody=cfg.prosody)
+    else:
+        raise ValueError(f"Unknown KRZYKACZ_TTS backend: {cfg.tts_backend!r}")
+
+    if cfg.cache_ttl <= 0:
+        return tts
+    return CachedTts(tts, cfg.cache_dir, cfg.cache_ttl, cfg.cache_max_mb * 1024 * 1024)
 
 
 def build_effects(cfg: Config) -> Effects:
@@ -77,9 +85,16 @@ def main() -> None:
 
     voices_info = list(cfg.piper_voices) if cfg.tts_backend == "piper" else [cfg.espeak_voice]
     default_voice = cfg.piper_default_voice if cfg.tts_backend == "piper" else cfg.espeak_voice
-    metadata = functools.partial(
-        describe, cfg.tts_backend, voices_info, default_voice, cfg.assets_dir
+    voices = functools.partial(describe_voices, cfg.tts_backend, voices_info, default_voice)
+    effects = functools.partial(describe_effects, cfg.assets_dir)
+    limits = functools.partial(
+        describe_limits, cfg.history_size, cfg.queue_size, cfg.rate_limit_interval
     )
+    describers = Describers(voices=voices, effects=effects, limits=limits)
+
+    # Shared across HTTP and MCP so a caller's per-IP budget is the same
+    # regardless of which transport it uses to trigger the light/speaker.
+    rate_limiter = IpRateLimiter(cfg.rate_limit_interval)
 
     if cfg.http_enabled:
         # Binds here on the main thread, so a port clash fails loudly at
@@ -89,8 +104,9 @@ def main() -> None:
             cfg.http_port,
             cfg.auth_token,
             announcer.submit,
-            metadata,
+            describers,
             announcer.snapshot,
+            rate_limiter,
         )
         _start_thread("http-server", http_server.serve_forever)
         logger.info("HTTP endpoint listening on %s:%d", cfg.http_host, cfg.http_port)
@@ -105,6 +121,8 @@ def main() -> None:
             cfg.mcp_port,
             cfg.auth_token,
             announcer.submit,
+            describers,
+            rate_limiter,
         )
         logger.info("Starting MCP endpoint on %s:%d", cfg.mcp_host, cfg.mcp_port)
 

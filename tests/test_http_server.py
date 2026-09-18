@@ -1,4 +1,5 @@
 import json
+import logging
 import socket
 import threading
 import time
@@ -7,16 +8,19 @@ import urllib.request
 
 import pytest
 
-from conftest import FakeAnnouncer, make_config
+from conftest import FakeAnnouncer, make_config, make_describers
 from krzykacz.http_server import (
+    EFFECTS_PATH,
+    LIMITS_PATH,
     MAX_BODY_BYTES,
-    METADATA_PATH,
     PUBLISH_PATH,
     QUEUE_PATH,
+    VOICES_PATH,
     PublishHandler,
     build_http_server,
 )
 from krzykacz.protocol import Msg, Repeat
+from krzykacz.ratelimit import IpRateLimiter
 
 
 
@@ -24,14 +28,15 @@ from krzykacz.protocol import Msg, Repeat
 def server_factory():
     servers = []
 
-    def start(cfg, announcer, metadata=None):
+    def start(cfg, announcer, describers=None, rate_limiter=None):
         server = build_http_server(
             cfg.http_host,
             cfg.http_port,
             cfg.auth_token,
             announcer.submit,
-            metadata or (lambda: {"tts": "espeak", "voices": ["pl"], "default_voice": "pl", "effects": []}),
+            describers or make_describers(),
             announcer.snapshot,
+            rate_limiter,
         )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -250,31 +255,71 @@ def test_unversioned_publish_path_is_404(server_factory):
     assert announcer.submitted == []
 
 
-def test_metadata_returns_voices_and_effects(server_factory):
+def test_retired_metadata_path_is_404(server_factory):
     announcer = FakeAnnouncer()
-    payload = {
-        "tts": "piper",
-        "voices": ["darkman", "justyna"],
-        "default_voice": "darkman",
-        "effects": ["boom.ogg"],
-    }
-    server = server_factory(make_config(), announcer, metadata=lambda: payload)
+    server = server_factory(make_config(), announcer)
 
-    status, body = get(server, METADATA_PATH)
+    # Replaced by the per-concern views below; gone, not silently aliased.
+    assert get(server, "/v1/metadata")[0] == 404
+
+
+def test_voices_returns_only_the_voice_view(server_factory):
+    announcer = FakeAnnouncer()
+    describers = make_describers(
+        voices=lambda: {"tts": "piper", "voices": ["darkman", "kopa"], "default_voice": "darkman"},
+        effects=lambda: {"effects": ["boom.ogg"]},
+    )
+    server = server_factory(make_config(), announcer, describers=describers)
+
+    status, body = get(server, VOICES_PATH)
 
     assert status == 200
-    assert body == payload
+    assert body == {"tts": "piper", "voices": ["darkman", "kopa"], "default_voice": "darkman"}
 
 
-def test_metadata_requires_auth_when_configured(server_factory):
+def test_effects_returns_only_the_effect_view(server_factory):
+    announcer = FakeAnnouncer()
+    describers = make_describers(effects=lambda: {"effects": ["boom.ogg", "fight"]})
+    server = server_factory(make_config(), announcer, describers=describers)
+
+    status, body = get(server, EFFECTS_PATH)
+
+    assert status == 200
+    assert body == {"effects": ["boom.ogg", "fight"]}
+
+
+def test_limits_returns_only_the_limit_view(server_factory):
+    announcer = FakeAnnouncer()
+    describers = make_describers(limits=lambda: {"max_repeat": 10, "rate_limit_interval": 10})
+    server = server_factory(make_config(), announcer, describers=describers)
+
+    status, body = get(server, LIMITS_PATH)
+
+    assert status == 200
+    assert body == {"max_repeat": 10, "rate_limit_interval": 10}
+
+
+def test_effects_view_is_reread_per_request(server_factory):
+    announcer = FakeAnnouncer()
+    files = []
+    server = server_factory(
+        make_config(), announcer, describers=make_describers(effects=lambda: {"effects": list(files)})
+    )
+
+    assert get(server, EFFECTS_PATH)[1] == {"effects": []}
+
+    files.append("late.ogg")
+
+    assert get(server, EFFECTS_PATH)[1] == {"effects": ["late.ogg"]}
+
+
+def test_read_views_require_auth_when_configured(server_factory):
     announcer = FakeAnnouncer()
     server = server_factory(make_config(auth_token="secret"), announcer)
 
-    status, _ = get(server, METADATA_PATH)
-    assert status == 401
-
-    status, _ = get(server, METADATA_PATH, headers={"Authorization": "Bearer secret"})
-    assert status == 200
+    for path in (VOICES_PATH, EFFECTS_PATH, LIMITS_PATH):
+        assert get(server, path)[0] == 401
+        assert get(server, path, headers={"Authorization": "Bearer secret"})[0] == 200
 
 
 def test_wrong_method_on_known_path_is_405(server_factory):
@@ -282,8 +327,8 @@ def test_wrong_method_on_known_path_is_405(server_factory):
     server = server_factory(make_config(), announcer)
 
     assert get(server, PUBLISH_PATH)[0] == 405
-    assert post(server, METADATA_PATH, "{}")[0] == 405
-    assert post(server, QUEUE_PATH, "{}")[0] == 405
+    for path in (VOICES_PATH, EFFECTS_PATH, LIMITS_PATH, QUEUE_PATH):
+        assert post(server, path, "{}")[0] == 405
     assert announcer.submitted == []
 
 
@@ -342,3 +387,59 @@ def test_queue_requires_auth_when_configured(server_factory):
 
     status, _ = get(server, QUEUE_PATH, headers={"Authorization": "Bearer secret"})
     assert status == 200
+
+
+def test_no_rate_limiter_configured_allows_rapid_publishes(server_factory):
+    announcer = FakeAnnouncer()
+    server = server_factory(make_config(), announcer)
+
+    assert post(server, PUBLISH_PATH, "one")[0] == 202
+    assert post(server, PUBLISH_PATH, "two")[0] == 202
+
+
+def test_second_publish_within_window_is_rate_limited(server_factory):
+    announcer = FakeAnnouncer()
+    server = server_factory(make_config(), announcer, rate_limiter=IpRateLimiter(60))
+
+    status1, _ = post(server, PUBLISH_PATH, "hello")
+    status2, payload2 = post(server, PUBLISH_PATH, "again")
+
+    assert status1 == 202
+    assert status2 == 429
+    assert payload2 == {"error": "rate limited"}
+    assert announcer.submitted == [Msg(content="hello")]
+
+
+def test_rate_limit_does_not_apply_to_reads(server_factory):
+    announcer = FakeAnnouncer()
+    server = server_factory(make_config(), announcer, rate_limiter=IpRateLimiter(60))
+
+    post(server, PUBLISH_PATH, "hello")
+
+    for path in (VOICES_PATH, EFFECTS_PATH, LIMITS_PATH, QUEUE_PATH):
+        assert get(server, path)[0] == 200
+
+
+def test_rate_limit_checked_after_auth(server_factory):
+    announcer = FakeAnnouncer()
+    server = server_factory(
+        make_config(auth_token="secret"), announcer, rate_limiter=IpRateLimiter(60)
+    )
+
+    status, _ = post(server, PUBLISH_PATH, "hello")
+
+    assert status == 401
+    assert announcer.submitted == []
+
+
+def test_audit_log_records_ip_method_path_and_status(server_factory, caplog):
+    announcer = FakeAnnouncer()
+    server = server_factory(make_config(), announcer)
+
+    with caplog.at_level(logging.INFO, logger="krzykacz.audit"):
+        post(server, PUBLISH_PATH, "hello")
+
+    assert "ip=127.0.0.1" in caplog.text
+    assert "action=POST" in caplog.text
+    assert f"path={PUBLISH_PATH!r}" in caplog.text
+    assert "status=202" in caplog.text

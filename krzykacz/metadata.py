@@ -2,9 +2,34 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Callable, Dict, List, NamedTuple, Sequence
+
+from .protocol import (
+    MAX_CONTENT_BYTES,
+    MAX_REPEAT_COUNT,
+    MAX_SPOKEN_BYTES,
+    RHYTHM_RANGE,
+    SPEED_RANGE,
+    VARIATION_RANGE,
+)
 
 logger = logging.getLogger(__name__)
+
+# A read-only view of this instance, rendered fresh on each call: the
+# describe_* functions below, with their instance-specific arguments already
+# bound (see krzykacz.__main__).
+Describer = Callable[[], Dict[str, object]]
+
+
+class Describers(NamedTuple):
+    """The read-only views this instance exposes, one callable per concern.
+    Bundled so a transport takes a single argument rather than one per view,
+    and so both transports are guaranteed to be describing the same
+    instance."""
+
+    voices: Describer
+    effects: Describer
+    limits: Describer
 
 
 def list_effects(assets_dir: str) -> List[str]:
@@ -21,17 +46,46 @@ def list_effects(assets_dir: str) -> List[str]:
         return []
 
 
-def describe(
-    tts_backend: str, voices: Sequence[str], default_voice: str, assets_dir: str
+def describe_voices(
+    tts_backend: str, voices: Sequence[str], default_voice: str
 ) -> Dict[str, object]:
-    """Builds the /v1/metadata payload: what this instance can actually play.
+    """What can be passed as `voice`.
 
     `tts` matters to callers because it decides how `voice` is interpreted --
     piper voice names from the configured voice map, versus espeak-ng
-    language codes passed straight through."""
+    language codes passed straight through. Multi-speaker models contribute
+    one name each (see krzykacz.tts.VoiceSpec), so this is a flat list
+    regardless of how many .onnx files back it."""
     return {
         "tts": tts_backend,
         "voices": list(voices),
         "default_voice": default_voice,
-        "effects": list_effects(assets_dir),
+    }
+
+
+def describe_effects(assets_dir: str) -> Dict[str, object]:
+    """What can be named in a `<file>` tag. Read fresh from disk on every
+    call, so effects added by download_effects.sh show up without a
+    restart."""
+    return {"effects": list_effects(assets_dir)}
+
+
+def describe_limits(
+    history_size: int, queue_size: int, rate_limit_interval: float
+) -> Dict[str, object]:
+    """The numbers a caller would otherwise have to hardcode from the README:
+    how long a message may be, how far `repeat` and `replay` reach, and how
+    often it may call at all."""
+    return {
+        "max_content_bytes": MAX_CONTENT_BYTES,
+        "max_spoken_bytes": MAX_SPOKEN_BYTES,
+        "max_repeat": MAX_REPEAT_COUNT,
+        "history_size": history_size,
+        "queue_size": queue_size,
+        "rate_limit_interval": rate_limit_interval,
+        # Accepted ranges for the delivery knobs; a value outside one is
+        # clamped, not rejected.
+        "speed_range": list(SPEED_RANGE),
+        "variation_range": list(VARIATION_RANGE),
+        "rhythm_range": list(RHYTHM_RANGE),
     }

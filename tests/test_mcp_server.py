@@ -1,10 +1,19 @@
 import asyncio
 
 import pytest
-from conftest import FakeAnnouncer
+from conftest import FakeAnnouncer, make_describers
 
-from krzykacz.mcp_server import _submit_message, _submit_repeat, _wrap_auth, build_mcp_app
+from krzykacz.mcp_server import (
+    _build_mcp_server,
+    _client_ip,
+    _submit_message,
+    _submit_repeat,
+    _wrap_auth,
+    _wrap_client_ip,
+    build_mcp_app,
+)
 from krzykacz.protocol import Msg, Repeat
+from krzykacz.ratelimit import IpRateLimiter
 
 
 
@@ -106,7 +115,7 @@ def test_build_mcp_app_registers_tools_and_wires_auth():
     pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
     announcer = FakeAnnouncer()
 
-    app = build_mcp_app("127.0.0.1", "secret", announcer.submit)
+    app = build_mcp_app("127.0.0.1", "secret", announcer.submit, make_describers())
 
     # Auth is wired: an unauthenticated HTTP request never reaches the app.
     sent = asyncio.run(_call_asgi(app, headers=[]))
@@ -114,11 +123,227 @@ def test_build_mcp_app_registers_tools_and_wires_auth():
     assert announcer.submitted == []
 
 
-def test_build_mcp_app_without_token_skips_auth_wrapper():
+def test_build_mcp_app_without_token_still_wraps_for_ip_capture():
     pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
     announcer = FakeAnnouncer()
 
-    app = build_mcp_app("127.0.0.1", None, announcer.submit)
+    app = build_mcp_app("127.0.0.1", None, announcer.submit, make_describers())
 
-    # No token configured -> the raw MCP app is returned, unwrapped.
-    assert getattr(app, "__name__", None) != "middleware"
+    # No token -> _wrap_auth is a no-op, but _wrap_client_ip always wraps
+    # the result, since rate limiting/audit need a source IP regardless of
+    # whether auth is configured.
+    assert getattr(app, "__name__", None) == "middleware"
+
+
+async def _call_asgi_scope(app, scope):
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b""}
+
+    async def send(message):
+        sent.append(message)
+
+    await app(scope, receive, send)
+    return sent
+
+
+def test_wrap_client_ip_captures_scope_client_for_the_request():
+    captured = {}
+
+    async def inner(scope, receive, send):
+        captured["ip"] = _client_ip.get()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+
+    app = _wrap_client_ip(inner)
+    asyncio.run(_call_asgi_scope(app, {"type": "http", "client": ("10.0.0.5", 54321), "headers": []}))
+
+    assert captured["ip"] == "10.0.0.5"
+    assert _client_ip.get() is None  # reset once the request finishes
+
+
+def test_wrap_client_ip_is_none_when_scope_has_no_client():
+    captured = {}
+
+    async def inner(scope, receive, send):
+        captured["ip"] = _client_ip.get()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+
+    app = _wrap_client_ip(inner)
+    asyncio.run(_call_asgi_scope(app, {"type": "http", "headers": []}))
+
+    assert captured["ip"] is None
+
+
+def test_wrap_client_ip_passes_through_non_http_scope():
+    calls = []
+
+    async def inner(scope, receive, send):
+        calls.append(scope["type"])
+
+    app = _wrap_client_ip(inner)
+    asyncio.run(_call_asgi_scope(app, {"type": "lifespan"}))
+
+    assert calls == ["lifespan"]
+
+
+def test_send_message_description_lists_available_voices():
+    pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
+    describers = make_describers(
+        voices=lambda: {"tts": "piper", "voices": ["darkman", "justyna"], "default_voice": "darkman"}
+    )
+    mcp = _build_mcp_server(FakeAnnouncer().submit, describers, IpRateLimiter(0))
+
+    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+
+    assert "darkman" in tools["send_message"].description
+    assert "justyna" in tools["send_message"].description
+
+
+def test_all_four_tools_are_registered():
+    pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
+    mcp = _build_mcp_server(FakeAnnouncer().submit, make_describers(), IpRateLimiter(0))
+
+    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+
+    assert set(tools) == {"send_message", "play_recent_message", "list_voices", "list_effects"}
+    assert tools["list_voices"].title == "List voices"
+    assert tools["list_effects"].title == "List sound effects"
+
+
+def test_list_voices_tool_returns_the_voice_view():
+    pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
+    describers = make_describers(
+        voices=lambda: {"tts": "piper", "voices": ["darkman", "kopa"], "default_voice": "darkman"}
+    )
+    mcp = _build_mcp_server(FakeAnnouncer().submit, describers, IpRateLimiter(0))
+
+    result = asyncio.run(mcp.call_tool("list_voices", {}))
+
+    # The SDK wraps a plain-dict return under "result" (see the tool's
+    # generated output_schema); the text content carries the same payload
+    # as JSON, which is what a model actually reads.
+    assert result.structured_content["result"] == {
+        "tts": "piper",
+        "voices": ["darkman", "kopa"],
+        "default_voice": "darkman",
+    }
+    assert "kopa" in result.content[0].text
+
+
+def test_list_effects_tool_reads_the_effect_view_per_call():
+    pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
+    files = []
+    describers = make_describers(effects=lambda: {"effects": list(files)})
+    mcp = _build_mcp_server(FakeAnnouncer().submit, describers, IpRateLimiter(0))
+
+    first = asyncio.run(mcp.call_tool("list_effects", {}))
+    assert first.structured_content["result"] == {"effects": []}
+
+    files.append("late.ogg")
+
+    second = asyncio.run(mcp.call_tool("list_effects", {}))
+    assert second.structured_content["result"] == {"effects": ["late.ogg"]}
+
+
+def test_read_only_tools_are_not_rate_limited():
+    pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
+    mcp = _build_mcp_server(FakeAnnouncer().submit, make_describers(), IpRateLimiter(60))
+
+    reset_token = _client_ip.set("9.9.9.9")
+    try:
+        # Neither touches the light or speaker, so repeated calls stay free --
+        # and they must not eat the budget the speaking tools need either.
+        asyncio.run(mcp.call_tool("list_voices", {}))
+        asyncio.run(mcp.call_tool("list_effects", {}))
+        speaking = asyncio.run(mcp.call_tool("send_message", {"content": "hello"}))
+    finally:
+        _client_ip.reset(reset_token)
+
+    assert "rate limited" not in str(speaking.structured_content)
+
+
+def test_play_recent_message_tool_is_named_and_titled():
+    pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
+    mcp = _build_mcp_server(FakeAnnouncer().submit, make_describers(), IpRateLimiter(0))
+
+    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+
+    assert "play_recent_message" in tools
+    assert tools["play_recent_message"].title == "Play recent message"
+    assert "-1" in tools["play_recent_message"].description
+
+
+def test_send_message_tool_submits_via_call_tool():
+    pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
+    announcer = FakeAnnouncer()
+    mcp = _build_mcp_server(announcer.submit, make_describers(), IpRateLimiter(0))
+
+    asyncio.run(mcp.call_tool("send_message", {"content": "hello"}))
+
+    assert announcer.submitted == [Msg(content="hello")]
+
+
+def test_send_message_tool_rate_limits_repeat_calls_from_same_ip():
+    pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
+    announcer = FakeAnnouncer()
+    mcp = _build_mcp_server(announcer.submit, make_describers(), IpRateLimiter(60))
+
+    reset_token = _client_ip.set("9.9.9.9")
+    try:
+        asyncio.run(mcp.call_tool("send_message", {"content": "first"}))
+        asyncio.run(mcp.call_tool("send_message", {"content": "second"}))
+    finally:
+        _client_ip.reset(reset_token)
+
+    # The second call from the same IP within the window must not reach the
+    # announcer.
+    assert announcer.submitted == [Msg(content="first")]
+
+
+def test_send_message_tool_without_captured_ip_falls_back_to_shared_bucket():
+    pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
+    announcer = FakeAnnouncer()
+    mcp = _build_mcp_server(announcer.submit, make_describers(), IpRateLimiter(60))
+
+    # No _wrap_client_ip in play (e.g. a direct call_tool, as here) ->
+    # _client_ip.get() is None. Rather than skip the check (fail open, no
+    # limit at all), this falls back to a shared "unknown" bucket, so calls
+    # from an unattributed source are still throttled, just as one group.
+    asyncio.run(mcp.call_tool("send_message", {"content": "first"}))
+    asyncio.run(mcp.call_tool("send_message", {"content": "second"}))
+
+    assert announcer.submitted == [Msg(content="first")]
+
+
+def test_play_recent_message_tool_rate_limits_repeat_calls_from_same_ip():
+    pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
+    announcer = FakeAnnouncer()
+    mcp = _build_mcp_server(announcer.submit, make_describers(), IpRateLimiter(60))
+
+    reset_token = _client_ip.set("9.9.9.9")
+    try:
+        asyncio.run(mcp.call_tool("play_recent_message", {"number": -1}))
+        asyncio.run(mcp.call_tool("play_recent_message", {"number": -1}))
+    finally:
+        _client_ip.reset(reset_token)
+
+    assert announcer.submitted == [Repeat(number=-1)]
+
+
+def test_send_message_and_play_recent_message_share_one_rate_limit_budget():
+    pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
+    announcer = FakeAnnouncer()
+    shared_limiter = IpRateLimiter(60)
+    mcp = _build_mcp_server(announcer.submit, make_describers(), shared_limiter)
+
+    reset_token = _client_ip.set("9.9.9.9")
+    try:
+        asyncio.run(mcp.call_tool("send_message", {"content": "hello"}))
+        asyncio.run(mcp.call_tool("play_recent_message", {"number": -1}))
+    finally:
+        _client_ip.reset(reset_token)
+
+    # The second tool call from the same IP consumes the same budget as the
+    # first, even though it's a different tool -- IpRateLimiter is shared.
+    assert announcer.submitted == [Msg(content="hello")]

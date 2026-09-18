@@ -21,10 +21,24 @@ Recognized keys:
 | `voice=<name>` | Piper voice name (see table below) |
 | `repeat=<n>` | speak the body `n` times, separated by `" Powtarzam! "` ("Repeating!"), capped at 10 (`MAX_REPEAT_COUNT`) |
 | `replay=<index>` | replay message `<index>` from the last 10 messages instead of speaking the body (`-1` = most recent, `-2` = second most recent); the body is ignored when this is set |
+| `speed=<x>` | tempo, `1.0` = normal, `1.5` = half again as fast, `0.7` = slower (clamped to 0.5–2.0) |
+| `variation=<x>` | how far the voice strays from its average -- pitch/timbre wobble. Piper's default is ~`0.667`; lower is flatter and more monotone, higher is livelier but can wobble (clamped to 0.0–1.5) |
+| `rhythm=<x>` | how far per-syllable timing strays from the predicted durations. Piper's default is ~`0.8` (clamped to 0.0–1.5) |
 
 Tags without `=` (ntfy also uses tags for plain emoji/text markers) and
 unrecognized keys are ignored. A body with no `Tags` header at all is spoken
 as plain text with the default voice, spoken once.
+
+`speed`, `variation` and `rhythm` are this protocol's names for Piper's
+`--length_scale`, `--noise_scale` and `--noise_w`. `speed` is the *inverse*
+of `length_scale` (a caller thinks in "1.5x faster", not "0.67x the phoneme
+duration"); the other two pass through unchanged. An out-of-range value is
+clamped rather than rejected, and a non-numeric one is ignored -- none of
+them is worth failing an alert over. Left unset, no flag is passed at all
+and Piper uses its own defaults, so an untagged message sounds exactly as it
+did before these existed. Instance-wide defaults live in
+`KRZYKACZ_PIPER_SPEED` / `_VARIATION` / `_RHYTHM`; a tag overrides them per
+message. The live ranges are in `GET /v1/limits`.
 
 `voice` (allowed characters: letters, digits, `-`, `_`, max 64 chars) selects a
 Piper voice by name from `KRZYKACZ_PIPER_VOICES`. A missing tag or unknown
@@ -106,6 +120,29 @@ bearer token (`Authorization: Bearer <token>`) on every request to either
 endpoint -- the examples below include it; drop the header if you haven't
 set a token.
 
+### Rate limiting and audit logging
+
+Every call that actually triggers the light/speaker -- `POST /v1/publish`
+over HTTP, and the `send_message`/`play_recent_message` MCP tools -- is
+limited to one call per source IP per `KRZYKACZ_RATE_LIMIT_INTERVAL`
+seconds (default `10`); a caller over that gets `429` (HTTP) or a
+"rate limited" text result (MCP) instead of being queued. The limit is
+shared between the two transports, so one IP can't get two calls in by
+mixing them. Set it to `0` to disable. Read-only calls (every `GET`, and the
+`list_voices`/`list_effects` MCP tools) are never rate-limited.
+
+Every HTTP request and MCP tool call is also logged one line at a time under
+the `krzykacz.audit` logger name (`ip=... action=... ...`), so
+`journalctl -u krzykacz | grep krzykacz.audit` shows who called what and
+whether it was queued, dropped, rate-limited, or rejected.
+
+Both the limiter and the audit log key on the raw TCP/ASGI source address --
+there's no `X-Forwarded-For` support. Putting a reverse proxy in front of
+krzykacz (e.g. to add TLS) would make every real caller show up as the
+proxy's own address, collapsing "one call per IP" into one shared budget for
+the whole service; this is a home-LAN tool with no reverse proxy in its
+supported setup, so that's accepted rather than worked around.
+
 ### HTTP
 
 Set `KRZYKACZ_HTTP_ENABLED=1`. The HTTP API is versioned under `/v1`.
@@ -122,8 +159,10 @@ curl -H "Authorization: Bearer <token>" \
 ```
 
 Responds `202 {"status": "queued"}`, or `503 {"status": "dropped"}` if the
-announcer's queue is full (see `KRZYKACZ_QUEUE_SIZE`), or `401` if the
-token is missing/wrong.
+announcer's queue is full (see `KRZYKACZ_QUEUE_SIZE`), `401` if the token is
+missing/wrong, or `429 {"error": "rate limited"}` if this source IP already
+published within `KRZYKACZ_RATE_LIMIT_INTERVAL` seconds (see below). Every
+`GET` below is read-only and not rate-limited.
 
 #### `GET /v1/queue`
 
@@ -143,37 +182,83 @@ curl -H "Authorization: Bearer <token>" http://192.168.1.50:8123/v1/queue
 `playing` is `null` when the announcer is idle. A queued `replay` request
 serializes as `{"replay": -1}` instead of `content`/`voice`/`repeat`.
 
-#### `GET /v1/metadata`
+#### `GET /v1/voices`
 
-Reports what this particular instance can actually play -- the configured
-voices and the sound effects present in `KRZYKACZ_ASSETS_DIR` -- so a client
-doesn't have to hardcode the tables from this README:
+What can be passed as `voice`:
 
 ```bash
-curl -H "Authorization: Bearer <token>" http://192.168.1.50:8123/v1/metadata
+curl -H "Authorization: Bearer <token>" http://192.168.1.50:8123/v1/voices
 ```
 
 ```json
 {
   "tts": "piper",
   "voices": ["darkman", "justyna", "jarvis", "meski", "zenski", "gosia", "bass", "mc_speech"],
-  "default_voice": "darkman",
-  "effects": ["fight", "game_over", "bark01", "8bit00", "..."]
+  "default_voice": "darkman"
 }
 ```
 
 `tts` tells you how to interpret `voice`: under `piper` the names come from the
-configured voice map, under `espeak` they're espeak-ng language codes. `effects`
-lists the filenames usable in a `<file>` tag; it's read fresh from disk on each
-request, so effects added by `download_effects.sh` show up without a restart.
+configured voice map, under `espeak` they're espeak-ng language codes. Voices
+backed by a multi-speaker model appear here as ordinary names, one per speaker.
+
+#### `GET /v1/effects`
+
+What can be named in a `<file>` tag:
+
+```bash
+curl -H "Authorization: Bearer <token>" http://192.168.1.50:8123/v1/effects
+```
+
+```json
+{"effects": ["fight", "game_over", "bark01", "8bit00", "..."]}
+```
+
+Read fresh from disk on each request, so effects added by
+`download_effects.sh` show up without a restart.
+
+#### `GET /v1/limits`
+
+The numbers a client would otherwise hardcode from this README -- how long a
+message may be, how far `repeat` and `replay` reach, how often it may call:
+
+```bash
+curl -H "Authorization: Bearer <token>" http://192.168.1.50:8123/v1/limits
+```
+
+```json
+{
+  "max_content_bytes": 800,
+  "max_spoken_bytes": 1600,
+  "max_repeat": 10,
+  "history_size": 10,
+  "queue_size": 10,
+  "rate_limit_interval": 10.0
+}
+```
 
 ### MCP
 
 Set `KRZYKACZ_MCP_ENABLED=1`. Exposes an MCP server over Streamable HTTP at
-`http://<host>:8124/mcp`, with two tools:
+`http://<host>:8124/mcp`, with two tools that speak:
 
-- `send_message(content, voice=None, repeat=None)`
-- `repeat_message(number=-1)`
+- `send_message(content, voice=None, repeat=None, speed=None, variation=None, rhythm=None)` -- speak new text
+- `play_recent_message(number=-1)` -- replay one of the last few messages
+  instead of resubmitting its text
+
+and two read-only ones that just report, mirroring `GET /v1/voices` and
+`GET /v1/effects` (not rate-limited, since they touch neither the lamp nor
+the speaker):
+
+- `list_voices()` -- voice names, the default, and the TTS backend
+- `list_effects()` -- sound-effect filenames usable in a `<file>` tag
+
+The speaking tools' descriptions (and the server's `instructions`) are
+generated from this instance's actual configuration -- the real list of
+voice names, the default voice, the TTS backend -- so an MCP client sees
+what it can pass to `voice` without guessing or re-reading this README, and
+can call `list_voices`/`list_effects` for anything added since the session
+started.
 
 This uses the official `mcp` Python SDK, which is **not** in
 `requirements.txt` (like `piper-tts`, it's an optional extra -- install it
@@ -233,24 +318,65 @@ curl -H "Authorization: Bearer $TOKEN" \
 | `KRZYKACZ_TTS` | `piper` | `piper` or `espeak` |
 | `KRZYKACZ_PIPER_DEFAULT_VOICE` | `darkman` | default voice name (key in the voice map) |
 | `KRZYKACZ_PIPER_MODEL` | `/var/lib/krzykacz/voices/pl_PL-darkman-medium.onnx` | path to the default voice's `.onnx` model |
-| `KRZYKACZ_PIPER_VOICES` | *(empty)* | extra voices: `name=/path.onnx,name2=/path2.onnx` |
+| `KRZYKACZ_PIPER_VOICES` | *(empty)* | extra voices: `name=/path.onnx,name2=/path2.onnx`; append `:<speaker index>` to a value to select one embedded speaker out of a multi-speaker model, e.g. `staszczyk=/path/pl_PL-tts-pl.onnx:0` -- see "Piper voices" below |
 | `KRZYKACZ_ESPEAK_VOICE` | `pl` | espeak-ng voice (fallback backend) |
 | `KRZYKACZ_ALSA_DEVICE` | *(unset = system default)* | ALSA device for `aplay` -- **check `aplay -l` on your Pi: the default card may be HDMI, not the jack, in which case you need something like `plughw:1,0`** |
+| `KRZYKACZ_PIPER_SPEED` | *(unset = piper's default)* | instance-wide `speed` (see Protocol above); a `speed` tag on a message overrides this |
+| `KRZYKACZ_PIPER_VARIATION` | *(unset = piper's default)* | instance-wide `variation`; overridden per message by a `variation` tag |
+| `KRZYKACZ_PIPER_RHYTHM` | *(unset = piper's default)* | instance-wide `rhythm`; overridden per message by a `rhythm` tag |
 | `KRZYKACZ_EFFECTS` | `ffmpeg` | `ffmpeg` or `null` |
 | `KRZYKACZ_ASSETS_DIR` | `/var/lib/krzykacz/assets` | directory holding sound effect files |
 | `KRZYKACZ_HISTORY` | `10` | how many recent messages to keep in memory |
 | `KRZYKACZ_QUEUE_SIZE` | `10` | max number of messages waiting to be played; anything beyond that is dropped (with a log warning) rather than queued indefinitely |
-| `KRZYKACZ_HTTP_ENABLED` | `0` | set to `1` to enable the HTTP endpoints (`POST /v1/publish`, `GET /v1/metadata`, `GET /v1/queue`) |
+| `KRZYKACZ_HTTP_ENABLED` | `0` | set to `1` to enable the HTTP endpoints (`POST /v1/publish`, plus `GET /v1/voices`, `/v1/effects`, `/v1/limits`, `/v1/queue`) |
 | `KRZYKACZ_HTTP_HOST` | `0.0.0.0` | HTTP endpoint bind address |
 | `KRZYKACZ_HTTP_PORT` | `8123` | HTTP endpoint port |
 | `KRZYKACZ_MCP_ENABLED` | `0` | set to `1` to enable the MCP endpoint (requires `pip install mcp`, Python >= 3.10) |
 | `KRZYKACZ_MCP_HOST` | `0.0.0.0` | MCP endpoint bind address |
 | `KRZYKACZ_MCP_PORT` | `8124` | MCP endpoint port |
 | `KRZYKACZ_AUTH_TOKEN` | *(unset = no auth)* | bearer token required by the HTTP and MCP endpoints when set |
+| `KRZYKACZ_RATE_LIMIT_INTERVAL` | `10` | seconds between calls that trigger the light/speaker, per source IP; shared by HTTP and MCP; `0` disables it |
+| `KRZYKACZ_CACHE_DIR` | `/var/cache/krzykacz` | where synthesized audio is cached (see "Audio cache" below) |
+| `KRZYKACZ_CACHE_TTL` | `86400` (24h) | seconds a cache entry stays valid; `0` disables caching entirely |
+| `KRZYKACZ_CACHE_MAX_MB` | `200` | cache directory size cap; oldest entries are evicted first once it's exceeded |
+
+## Audio cache 💾
+
+Synthesizing is the slow part of announcing a message -- `piper`'s process
+start, model load and inference are what causes the multi-second gap between
+the light turning on and sound starting (see `Announcer._announce`). A
+`replay`, a nightly-identical alert, or simply the same message sent twice
+pays that cost again for byte-identical output, so the second time it's
+served from `KRZYKACZ_CACHE_DIR` instead.
+
+The cache key covers everything that decides the audio: the text, the
+resolved model/speaker (not just the voice *name* -- `KRZYKACZ_PIPER_VOICES`
+can remap a name, and an unknown one falls back to the default), and the
+`speed`/`variation`/`rhythm` knobs. A `piper` crash (empty output) is never
+cached, so a transient failure doesn't serve silence for the rest of the
+TTL. Entries older than `KRZYKACZ_CACHE_TTL` are dropped on their next
+lookup; the directory is also swept for size roughly once an hour, oldest
+first, once it exceeds `KRZYKACZ_CACHE_MAX_MB`.
+
+Every write and read failure (full disk, missing directory, permissions) is
+logged and falls back to synthesizing directly -- a broken cache degrades
+speed, never breaks playback. The directory can be deleted at any time; it's
+rebuilt on demand. Set `KRZYKACZ_CACHE_TTL=0` to disable caching altogether.
+
+`repeat` gets a related optimization on Piper (raw PCM concatenates
+cleanly): the message and `" Powtarzam! "` are each synthesized once and the
+requested number of copies are joined as audio, instead of synthesizing the
+whole joined text every time. The separator is cached too, and it's the same
+entry across every message in a given voice, so after the first repeated
+message it's always a cache hit. This also means a long message with a high
+`repeat` gets truncated to whole copies rather than cut off mid-word.
+espeak-ng (the no-hardware fallback) keeps the old joined-text behavior --
+its WAV output doesn't concatenate.
 
 ## Piper voices 🎙️
 
-Eight ready-made Polish voices, Piper format (`.onnx` + `.onnx.json`), all 22050 Hz:
+Eight ready-made single-speaker Polish voices, Piper format (`.onnx` +
+`.onnx.json`), all 22050 Hz (see below for 8 more from one multi-speaker model):
 
 - **`darkman`** (default), **`gosia`**, **`bass`**, **`mc_speech`** --
   [`rhasspy/piper-voices`](https://huggingface.co/rhasspy/piper-voices), the
@@ -262,6 +388,39 @@ Eight ready-made Polish voices, Piper format (`.onnx` + `.onnx.json`), all 22050
 (`rhasspy/piper-voices` also has `mls_6892` for Polish, but it's a lower-quality
 16 kHz model -- our fixed 22050 Hz pipeline doesn't support it out of the box, so
 it's left out.)
+
+### Multi-speaker: 8 more voices from one model
+
+[`hvsr-robotics/tts-pl-piper-v2`](https://huggingface.co/hvsr-robotics/tts-pl-piper-v2)
+bakes 8 named speakers into a single 22050 Hz `.onnx` file (fine-tuned from
+`pl_PL-darkman-medium` on Wolne Lektury audiobook narration, CC BY-SA 4.0).
+`download_voices.sh` fetches it as `pl_PL-tts-pl.onnx`, but unlike the voices
+above, one file isn't one voice here -- each speaker needs its own
+`KRZYKACZ_PIPER_VOICES` entry pointing at the *same* file with a different
+`:<speaker index>` suffix (see `krzykacz.tts.VoiceSpec` /
+`krzykacz.config._parse_voices`, which parse that suffix and pass it to
+`piper --speaker <index>` at synthesis time):
+
+```bash
+KRZYKACZ_PIPER_VOICES="staszczyk=/var/lib/krzykacz/voices/pl_PL-tts-pl.onnx:0,\
+krzyzowski=/var/lib/krzykacz/voices/pl_PL-tts-pl.onnx:1,\
+masiak=/var/lib/krzykacz/voices/pl_PL-tts-pl.onnx:2,\
+bielenia=/var/lib/krzykacz/voices/pl_PL-tts-pl.onnx:3,\
+proszek=/var/lib/krzykacz/voices/pl_PL-tts-pl.onnx:4,\
+faszczewska=/var/lib/krzykacz/voices/pl_PL-tts-pl.onnx:5,\
+glogowski=/var/lib/krzykacz/voices/pl_PL-tts-pl.onnx:6,\
+kopa=/var/lib/krzykacz/voices/pl_PL-tts-pl.onnx:7"
+```
+
+(Index-to-name mapping straight from the model card: `0` Jan Staszczyk, `1`
+Radosław Krzyżowski, `2` Wojciech Masiak, `3` Bartosz Bielenia, `4` Marek
+Proszek, `5` Katarzyna Faszczewska, `6` Bartosz Głogowski, `7` Piotr Kopa;
+this repo's names above drop diacritics and use surnames only, to stay
+consistent with the plain-ASCII, single-word style of the other voice
+names and to avoid the two Bartoszes colliding.) These voices then show up
+in `GET /v1/voices` and the MCP tool descriptions exactly like the eight
+above -- one flat list of voice names, regardless of how many `.onnx` files
+back them.
 
 Download (idempotent -- skips files already on disk):
 
@@ -282,7 +441,7 @@ Pack (Fighter) and Music Jingles from [kenney.nl](https://kenney.nl), and
 rubberduck on OpenGameArt. 211 `.ogg` files total, stored **without an
 extension** so the tag you type is short -- `<fight>`, `<8bit00>`, `<bark01>`.
 Full list of names in [`SOUNDS.md`](SOUNDS.md), or read live from
-`GET /v1/metadata`'s `effects` field.
+`GET /v1/effects` (the `list_effects` MCP tool reports the same thing).
 
 Download (idempotent, copies files without conversion -- `KRZYKACZ_EFFECTS=ffmpeg`
 plays any format `ffmpeg` can decode):

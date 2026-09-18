@@ -1,6 +1,9 @@
 from krzykacz.protocol import (
     MAX_CONTENT_BYTES,
     MAX_REPEAT_COUNT,
+    RHYTHM_RANGE,
+    SPEED_RANGE,
+    VARIATION_RANGE,
     Msg,
     Repeat,
     parse,
@@ -33,6 +36,40 @@ def test_voice_and_repeat_tags_combined():
     assert parse("czesc", ["voice=justyna", "repeat=2"]) == Msg(
         content="czesc", voice="justyna", repeat_count=2
     )
+
+
+def test_speed_variation_and_rhythm_tags_are_parsed():
+    assert parse("czesc", ["speed=1.5", "variation=0.2", "rhythm=0.9"]) == Msg(
+        content="czesc", speed=1.5, variation=0.2, rhythm=0.9
+    )
+
+
+def test_delivery_knobs_default_to_none_when_absent():
+    msg = parse("czesc")
+
+    # None means "leave this instance's configured value alone".
+    assert (msg.speed, msg.variation, msg.rhythm) == (None, None, None)
+
+
+def test_out_of_range_knobs_are_clamped_not_rejected():
+    fast = parse("czesc", ["speed=99"])
+    slow = parse("czesc", ["speed=0.01"])
+
+    assert (fast.speed, slow.speed) == (SPEED_RANGE[1], SPEED_RANGE[0])
+
+
+def test_variation_and_rhythm_are_clamped_to_their_own_ranges():
+    msg = parse("czesc", ["variation=9", "rhythm=-4"])
+
+    assert (msg.variation, msg.rhythm) == (VARIATION_RANGE[1], RHYTHM_RANGE[0])
+
+
+def test_non_numeric_knob_is_ignored_rather_than_failing_the_message():
+    msg = parse("czesc", ["speed=szybko", "variation=0.3"])
+
+    assert msg.speed is None
+    assert msg.variation == 0.3
+    assert msg.content == "czesc"
 
 
 def test_replay_tag_produces_repeat_envelope():

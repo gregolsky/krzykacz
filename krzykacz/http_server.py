@@ -4,22 +4,24 @@ import functools
 import json
 import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Container, Dict, List, Optional
 from urllib.parse import urlsplit
 
 from .announcer import Submit
+from .audit import log_call
 from .auth import check_bearer_token
+from .metadata import Describer, Describers
 from .protocol import MAX_CONTENT_BYTES, Envelope, Repeat, parse
+from .ratelimit import IpRateLimiter, rate_limit_or_log
 
 logger = logging.getLogger(__name__)
 
 PUBLISH_PATH = "/v1/publish"
-METADATA_PATH = "/v1/metadata"
+VOICES_PATH = "/v1/voices"
+EFFECTS_PATH = "/v1/effects"
+LIMITS_PATH = "/v1/limits"
 QUEUE_PATH = "/v1/queue"
-KNOWN_PATHS = (PUBLISH_PATH, METADATA_PATH, QUEUE_PATH)
-
-# Callable returning the /v1/metadata payload; see krzykacz.metadata.describe.
-Metadata = Callable[[], Dict[str, object]]
+KNOWN_PATHS = (PUBLISH_PATH, VOICES_PATH, EFFECTS_PATH, LIMITS_PATH, QUEUE_PATH)
 
 # Callable returning the /v1/queue payload; see krzykacz.announcer.Announcer.snapshot.
 Snapshot = Callable[[], Dict[str, object]]
@@ -35,10 +37,21 @@ def _serialize_envelope(envelope: Optional[Envelope]) -> Optional[Dict[str, obje
     return {"content": envelope.content, "voice": envelope.voice, "repeat": envelope.repeat_count}
 
 
+def _queue_payload(snapshot: Snapshot) -> Dict[str, object]:
+    """Adapts the announcer's snapshot into the /v1/queue payload. Lives here
+    rather than on the announcer because the envelope-to-JSON shape is this
+    transport's representation choice."""
+    state = snapshot()
+    return {
+        "playing": _serialize_envelope(state["playing"]),
+        "pending": [_serialize_envelope(envelope) for envelope in state["pending"]],
+    }
+
+
 class PublishHandler(BaseHTTPRequestHandler):
     """POST /v1/publish with the same body+Tags ntfy accepts (see
-    protocol.parse), GET /v1/metadata for the voices and effects this
-    instance can play, and GET /v1/queue for what's playing/pending."""
+    protocol.parse), plus a read-only GET per concern: /v1/voices,
+    /v1/effects, /v1/limits and /v1/queue."""
 
     # Bounds how long a connection can sit idle (e.g. headers sent, body
     # withheld) before the worker thread gives up -- without this, a client
@@ -50,15 +63,15 @@ class PublishHandler(BaseHTTPRequestHandler):
         self,
         *args,
         submit: Submit,
-        metadata: Metadata,
-        snapshot: Snapshot,
+        get_routes: Dict[str, Describer],
         auth_token: Optional[str],
+        rate_limiter: IpRateLimiter,
         **kwargs,
     ):
         self._submit = submit
-        self._metadata = metadata
-        self._snapshot = snapshot
+        self._get_routes = get_routes
         self._auth_token = auth_token
+        self._rate_limiter = rate_limiter
         super().__init__(*args, **kwargs)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002 (stdlib signature)
@@ -66,6 +79,10 @@ class PublishHandler(BaseHTTPRequestHandler):
 
     def _respond(self, status: int, payload: dict) -> None:
         data = json.dumps(payload).encode("utf-8")
+        # Audited before the response goes out, not after: the decision is
+        # what's being recorded, so it must not depend on the write
+        # succeeding (or on the client still being there to read it).
+        log_call(self.command, self.client_address[0], path=self.path, status=status)
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -77,14 +94,14 @@ class PublishHandler(BaseHTTPRequestHandler):
             return True
         return check_bearer_token(self.headers.get("Authorization"), self._auth_token)
 
-    def _route(self, path: str, allowed: str) -> bool:
-        """Authenticates, then matches the path against the single path
-        allowed for this HTTP method. Returns False (having already
-        responded) when the request should not reach a handler."""
+    def _route(self, path: str, allowed: Container[str]) -> bool:
+        """Authenticates, then matches the path against the paths this HTTP
+        method serves. Returns False (having already responded) when the
+        request should not reach a handler."""
         if not self._authorized():
             self._respond(401, {"error": "unauthorized"})
             return False
-        if path == allowed:
+        if path in allowed:
             return True
         if path in KNOWN_PATHS:
             self._respond(405, {"error": "method not allowed"})
@@ -101,24 +118,12 @@ class PublishHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
-        if path == QUEUE_PATH:
-            if not self._route(path, QUEUE_PATH):
-                return
-            state = self._snapshot()
-            self._respond(
-                200,
-                {
-                    "playing": _serialize_envelope(state["playing"]),
-                    "pending": [_serialize_envelope(e) for e in state["pending"]],
-                },
-            )
+        if not self._route(path, self._get_routes):
             return
-        if not self._route(path, METADATA_PATH):
-            return
-        self._respond(200, self._metadata())
+        self._respond(200, self._get_routes[path]())
 
     def do_POST(self) -> None:
-        if not self._route(urlsplit(self.path).path, PUBLISH_PATH):
+        if not self._route(urlsplit(self.path).path, (PUBLISH_PATH,)):
             return
 
         try:
@@ -135,6 +140,14 @@ class PublishHandler(BaseHTTPRequestHandler):
             self._respond(413, {"error": "body too large"})
             return
 
+        # Rate-limited here, after the request is known well-formed -- only
+        # a call that could actually reach the announcer should spend this
+        # IP's budget. Not in _route: the GET views are harmless reads and
+        # stay unlimited.
+        if not rate_limit_or_log(self._rate_limiter, self.client_address[0], "publish"):
+            self._respond(429, {"error": "rate limited"})
+            return
+
         body = self.rfile.read(length).decode("utf-8", errors="replace")
         envelope = parse(body, self._tags())
         queued = self._submit(envelope)
@@ -146,10 +159,23 @@ def build_http_server(
     port: int,
     auth_token: Optional[str],
     submit: Submit,
-    metadata: Metadata,
+    describers: Describers,
     snapshot: Snapshot,
+    rate_limiter: Optional[IpRateLimiter] = None,
 ) -> ThreadingHTTPServer:
+    # Which URL serves which view is decided here, so callers hand over the
+    # views (krzykacz.metadata.Describers) and stay out of the URL space.
+    get_routes: Dict[str, Describer] = {
+        VOICES_PATH: describers.voices,
+        EFFECTS_PATH: describers.effects,
+        LIMITS_PATH: describers.limits,
+        QUEUE_PATH: functools.partial(_queue_payload, snapshot),
+    }
     handler = functools.partial(
-        PublishHandler, submit=submit, metadata=metadata, snapshot=snapshot, auth_token=auth_token
+        PublishHandler,
+        submit=submit,
+        get_routes=get_routes,
+        auth_token=auth_token,
+        rate_limiter=rate_limiter if rate_limiter is not None else IpRateLimiter.disabled(),
     )
     return ThreadingHTTPServer((host, port), handler)

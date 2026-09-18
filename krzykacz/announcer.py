@@ -19,7 +19,7 @@ from .protocol import (
     preview,
     split_effect,
 )
-from .tts import Tts
+from .tts import Prosody, Tts
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,17 @@ Submit = Callable[[Envelope], bool]
 NO_SUCH_MESSAGE = "Nie ma takiej wiadomości"
 
 _TERMINAL_PUNCTUATION = ".!?:;…"
+
+
+def _repeats_within_budget(spoken: str, repeat_count: int) -> int:
+    """How many copies of `spoken`, joined by REPEAT_SEPARATOR, fit in
+    MAX_SPOKEN_BYTES. Same budget the joined-text path gets from _truncate,
+    but spent in whole copies -- concatenated audio can only be cut at a
+    copy boundary, which beats _truncate's mid-word cut of the last one."""
+    per_copy = len(spoken.encode("utf-8"))
+    separator = len(REPEAT_SEPARATOR.encode("utf-8"))
+    fits = (MAX_SPOKEN_BYTES + separator) // (per_copy + separator)
+    return max(1, min(repeat_count, fits))
 
 
 def _with_terminal_punctuation(text: str) -> str:
@@ -128,9 +139,6 @@ class Announcer:
         audio: Optional[bytes] = None
         if spoken:
             spoken = _with_terminal_punctuation(spoken)
-            if msg.repeat_count > 1:
-                spoken = REPEAT_SEPARATOR.join([spoken] * msg.repeat_count)
-                spoken = _truncate(spoken, MAX_SPOKEN_BYTES)
             try:
                 logger.info(
                     "Synthesizing (voice=%s, repeats=%d): %s",
@@ -138,7 +146,7 @@ class Announcer:
                     msg.repeat_count,
                     preview(spoken),
                 )
-                audio = self._tts.synthesize(spoken, voice=msg.voice)
+                audio = self._synthesize(spoken, msg)
             except Exception:
                 logger.exception("Failed to synthesize message")
 
@@ -168,6 +176,41 @@ class Announcer:
                 self._light.off()
             except Exception:
                 logger.exception("Failed to turn light off")
+
+    def _synthesize(self, spoken: str, msg: Msg) -> bytes:
+        """Renders `spoken`, repeated `msg.repeat_count` times with
+        REPEAT_SEPARATOR between copies.
+
+        A backend whose output concatenates (raw PCM -- see
+        Tts.concatenable) renders the body and the separator once each and
+        the copies are joined as audio: one synthesis instead of N, and both
+        pieces are cacheable on their own, the separator across every
+        message in that voice. The joins land on sentence boundaries, where
+        a listener expects a pause anyway.
+
+        Any other backend keeps the joined-text path: one synthesis of the
+        whole thing, exactly as before."""
+        voice = msg.voice
+        prosody = Prosody(speed=msg.speed, variation=msg.variation, rhythm=msg.rhythm)
+        repeat_count = msg.repeat_count
+
+        if repeat_count <= 1:
+            return self._tts.synthesize(spoken, voice, prosody)
+
+        if not self._tts.concatenable:
+            joined = _truncate(REPEAT_SEPARATOR.join([spoken] * repeat_count), MAX_SPOKEN_BYTES)
+            return self._tts.synthesize(joined, voice, prosody)
+
+        copies = _repeats_within_budget(spoken, repeat_count)
+        if copies < repeat_count:
+            logger.info("Repeat %d exceeds the spoken-bytes budget, playing %d", repeat_count, copies)
+        body = self._tts.synthesize(spoken, voice, prosody)
+        if copies <= 1:
+            return body
+        # Same prosody for the separator, so it doesn't jump out of the
+        # message it's separating.
+        separator = self._tts.synthesize(REPEAT_SEPARATOR, voice, prosody)
+        return separator.join([body] * copies)
 
     def _resolve_effect(self, name: str) -> Optional[Path]:
         candidate = (self._assets_dir / name).resolve()

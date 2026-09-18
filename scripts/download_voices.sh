@@ -40,5 +40,14 @@ for voice in justyna jarvis meski zenski; do
     fetch "$BASE/pl_PL-${voice}_wg_glos-medium.onnx.json" "$DEST/pl_PL-${voice}_wg_glos-medium.onnx.json"
 done
 
+# hvsr-robotics/tts-pl-piper-v2 -- one multi-speaker model (8 named speakers
+# baked into a single file, fine-tuned from pl_PL-darkman-medium on Wolne
+# Lektury audiobook narration) rather than 8 separate .onnx files. Selecting
+# a speaker happens at synthesis time via KRZYKACZ_PIPER_VOICES's ":<index>"
+# suffix -- see README's Piper voices section for the ready-made line.
+BASE="https://huggingface.co/hvsr-robotics/tts-pl-piper-v2/resolve/main/export/piper_v2_target"
+fetch "$BASE/pl_PL-tts-pl.onnx" "$DEST/pl_PL-tts-pl.onnx"
+fetch "$BASE/pl_PL-tts-pl.onnx.json" "$DEST/pl_PL-tts-pl.onnx.json"
+
 echo "done: $DEST"
 ls -la "$DEST"
