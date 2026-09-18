@@ -8,13 +8,15 @@ import urllib.request
 
 import pytest
 
-from conftest import FakeAnnouncer, make_config, make_describers
+from conftest import FakeAnnouncer, make_config, make_describers, make_pickers
 from krzykacz.http_server import (
     EFFECTS_PATH,
     LIMITS_PATH,
     MAX_BODY_BYTES,
     PUBLISH_PATH,
     QUEUE_PATH,
+    RANDOM_CURSE_PATH,
+    RANDOM_SOUND_PATH,
     VOICES_PATH,
     PublishHandler,
     build_http_server,
@@ -28,13 +30,14 @@ from krzykacz.ratelimit import IpRateLimiter
 def server_factory():
     servers = []
 
-    def start(cfg, announcer, describers=None, rate_limiter=None):
+    def start(cfg, announcer, describers=None, pickers=None, rate_limiter=None):
         server = build_http_server(
             cfg.http_host,
             cfg.http_port,
             cfg.auth_token,
             announcer.submit,
             describers or make_describers(),
+            pickers or make_pickers(),
             announcer.snapshot,
             rate_limiter,
         )
@@ -326,7 +329,8 @@ def test_wrong_method_on_known_path_is_405(server_factory):
     announcer = FakeAnnouncer()
     server = server_factory(make_config(), announcer)
 
-    assert get(server, PUBLISH_PATH)[0] == 405
+    for path in (PUBLISH_PATH, RANDOM_SOUND_PATH, RANDOM_CURSE_PATH):
+        assert get(server, path)[0] == 405
     for path in (VOICES_PATH, EFFECTS_PATH, LIMITS_PATH, QUEUE_PATH):
         assert post(server, path, "{}")[0] == 405
     assert announcer.submitted == []
@@ -443,3 +447,95 @@ def test_audit_log_records_ip_method_path_and_status(server_factory, caplog):
     assert "action=POST" in caplog.text
     assert f"path={PUBLISH_PATH!r}" in caplog.text
     assert "status=202" in caplog.text
+
+
+def test_random_sound_queues_and_echoes_pick(server_factory):
+    announcer = FakeAnnouncer()
+    picked = Msg(content="<fight>")
+    server = server_factory(make_config(), announcer, pickers=make_pickers(sound=lambda: picked))
+
+    status, payload = post(server, RANDOM_SOUND_PATH, "")
+
+    assert status == 202
+    assert payload == {"status": "queued", "content": "<fight>", "voice": None, "speed": None}
+    assert announcer.submitted == [picked]
+
+
+def test_random_curse_queues_and_echoes_pick(server_factory):
+    announcer = FakeAnnouncer()
+    picked = Msg(content="Motyla noga!", voice="darkman", speed=1.1)
+    pickers = make_pickers(curse=lambda intensity, style: picked)
+    server = server_factory(make_config(), announcer, pickers=pickers)
+
+    status, payload = post(server, RANDOM_CURSE_PATH, "")
+
+    assert status == 202
+    assert payload == {
+        "status": "queued",
+        "content": "Motyla noga!",
+        "voice": "darkman",
+        "speed": 1.1,
+    }
+    assert announcer.submitted == [picked]
+
+
+def test_random_curse_query_string_reaches_picker(server_factory):
+    announcer = FakeAnnouncer()
+    seen = {}
+
+    def curse(intensity, style):
+        seen["intensity"] = intensity
+        seen["style"] = style
+        return Msg(content="Kurde!")
+
+    server = server_factory(make_config(), announcer, pickers=make_pickers(curse=curse))
+
+    post(server, RANDOM_CURSE_PATH + "?intensity=mild&style=funny", "")
+
+    assert seen == {"intensity": "mild", "style": "funny"}
+
+
+def test_random_action_returns_503_when_picker_returns_none(server_factory):
+    announcer = FakeAnnouncer()
+    server = server_factory(make_config(), announcer, pickers=make_pickers(sound=lambda: None))
+
+    status, payload = post(server, RANDOM_SOUND_PATH, "")
+
+    assert status == 503
+    assert payload == {"error": "nothing to play"}
+    assert announcer.submitted == []
+
+
+def test_random_sound_is_rate_limited(server_factory):
+    announcer = FakeAnnouncer()
+    pickers = make_pickers(sound=lambda: Msg(content="<fight>"))
+    server = server_factory(
+        make_config(), announcer, pickers=pickers, rate_limiter=IpRateLimiter(60)
+    )
+
+    status1, _ = post(server, RANDOM_SOUND_PATH, "")
+    status2, payload2 = post(server, RANDOM_SOUND_PATH, "")
+
+    assert status1 == 202
+    assert status2 == 429
+    assert payload2 == {"error": "rate limited"}
+    assert len(announcer.submitted) == 1
+
+
+def test_random_sound_post_with_no_content_length_header_succeeds(server_factory):
+    # Unlike /v1/publish, these take no body -- do_POST must not require
+    # Content-Length before dispatching to a random action.
+    announcer = FakeAnnouncer()
+    pickers = make_pickers(sound=lambda: Msg(content="<fight>"))
+    server = server_factory(make_config(), announcer, pickers=pickers)
+
+    request = (
+        b"POST " + RANDOM_SOUND_PATH.encode() + b" HTTP/1.1\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Connection: close\r\n"
+        b"\r\n"
+    )
+    response = _raw_request(server, request)
+
+    assert b" 202 " in response.split(b"\r\n", 1)[0]
+    assert announcer.submitted == [Msg(content="<fight>")]

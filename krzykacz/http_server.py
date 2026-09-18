@@ -5,23 +5,27 @@ import json
 import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Container, Dict, List, Optional
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from .announcer import Submit
 from .audit import log_call
 from .auth import check_bearer_token
 from .metadata import Describer, Describers
-from .protocol import MAX_CONTENT_BYTES, Envelope, Repeat, parse
+from .protocol import MAX_CONTENT_BYTES, Envelope, Msg, Repeat, parse
+from .random_picks import Pickers
 from .ratelimit import IpRateLimiter, rate_limit_or_log
 
 logger = logging.getLogger(__name__)
 
 PUBLISH_PATH = "/v1/publish"
+RANDOM_SOUND_PATH = "/v1/random-sound"
+RANDOM_CURSE_PATH = "/v1/random-curse"
 VOICES_PATH = "/v1/voices"
 EFFECTS_PATH = "/v1/effects"
 LIMITS_PATH = "/v1/limits"
 QUEUE_PATH = "/v1/queue"
-KNOWN_PATHS = (PUBLISH_PATH, VOICES_PATH, EFFECTS_PATH, LIMITS_PATH, QUEUE_PATH)
+POST_PATHS = (PUBLISH_PATH, RANDOM_SOUND_PATH, RANDOM_CURSE_PATH)
+KNOWN_PATHS = POST_PATHS + (VOICES_PATH, EFFECTS_PATH, LIMITS_PATH, QUEUE_PATH)
 
 # Callable returning the /v1/queue payload; see krzykacz.announcer.Announcer.snapshot.
 Snapshot = Callable[[], Dict[str, object]]
@@ -50,7 +54,8 @@ def _queue_payload(snapshot: Snapshot) -> Dict[str, object]:
 
 class PublishHandler(BaseHTTPRequestHandler):
     """POST /v1/publish with the same body+Tags ntfy accepts (see
-    protocol.parse), plus a read-only GET per concern: /v1/voices,
+    protocol.parse); POST /v1/random-sound and /v1/random-curse to trigger a
+    random pick with no body; plus a read-only GET per concern: /v1/voices,
     /v1/effects, /v1/limits and /v1/queue."""
 
     # Bounds how long a connection can sit idle (e.g. headers sent, body
@@ -64,12 +69,14 @@ class PublishHandler(BaseHTTPRequestHandler):
         *args,
         submit: Submit,
         get_routes: Dict[str, Describer],
+        pickers: Pickers,
         auth_token: Optional[str],
         rate_limiter: IpRateLimiter,
         **kwargs,
     ):
         self._submit = submit
         self._get_routes = get_routes
+        self._pickers = pickers
         self._auth_token = auth_token
         self._rate_limiter = rate_limiter
         super().__init__(*args, **kwargs)
@@ -123,9 +130,23 @@ class PublishHandler(BaseHTTPRequestHandler):
         self._respond(200, self._get_routes[path]())
 
     def do_POST(self) -> None:
-        if not self._route(urlsplit(self.path).path, (PUBLISH_PATH,)):
+        parts = urlsplit(self.path)
+        if not self._route(parts.path, POST_PATHS):
             return
 
+        if parts.path == PUBLISH_PATH:
+            self._publish()
+        elif parts.path == RANDOM_SOUND_PATH:
+            self._random("random-sound", self._pickers.sound)
+        else:
+            params = parse_qs(parts.query)
+            intensity = params.get("intensity", [None])[0]
+            style = params.get("style", [None])[0]
+            self._random(
+                "random-curse", functools.partial(self._pickers.curse, intensity, style)
+            )
+
+    def _publish(self) -> None:
         try:
             length = int(self.headers.get("Content-Length", ""))
         except ValueError:
@@ -153,6 +174,31 @@ class PublishHandler(BaseHTTPRequestHandler):
         queued = self._submit(envelope)
         self._respond(202 if queued else 503, {"status": "queued" if queued else "dropped"})
 
+    def _random(self, action: str, make_msg: Callable[[], Optional[Msg]]) -> None:
+        """Shared shape for the two randomized actions: no request body (so no
+        Content-Length requirement, unlike _publish), rate-limited the same
+        way as publish, and the response echoes what was picked since a
+        random action gives the caller no other way to learn what fired."""
+        if not rate_limit_or_log(self._rate_limiter, self.client_address[0], action):
+            self._respond(429, {"error": "rate limited"})
+            return
+
+        msg = make_msg()
+        if msg is None:
+            self._respond(503, {"error": "nothing to play"})
+            return
+
+        queued = self._submit(msg)
+        self._respond(
+            202 if queued else 503,
+            {
+                "status": "queued" if queued else "dropped",
+                "content": msg.content,
+                "voice": msg.voice,
+                "speed": msg.speed,
+            },
+        )
+
 
 def build_http_server(
     host: str,
@@ -160,6 +206,7 @@ def build_http_server(
     auth_token: Optional[str],
     submit: Submit,
     describers: Describers,
+    pickers: Pickers,
     snapshot: Snapshot,
     rate_limiter: Optional[IpRateLimiter] = None,
 ) -> ThreadingHTTPServer:
@@ -175,6 +222,7 @@ def build_http_server(
         PublishHandler,
         submit=submit,
         get_routes=get_routes,
+        pickers=pickers,
         auth_token=auth_token,
         rate_limiter=rate_limiter if rate_limiter is not None else IpRateLimiter.disabled(),
     )

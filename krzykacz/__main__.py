@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import random
 import threading
 
 from .announcer import Announcer
@@ -11,6 +12,7 @@ from .http_server import build_http_server
 from .light import Light, NullLight, UhubctlLight
 from .metadata import Describers, describe_effects, describe_limits, describe_voices
 from .ntfy import listen
+from .random_picks import INTENSITIES, STYLES, Pickers, random_curse_msg, random_sound_msg
 from .ratelimit import IpRateLimiter
 from .tts import CachedTts, EspeakTts, PiperTts, Tts
 
@@ -88,9 +90,20 @@ def main() -> None:
     voices = functools.partial(describe_voices, cfg.tts_backend, voices_info, default_voice)
     effects = functools.partial(describe_effects, cfg.assets_dir)
     limits = functools.partial(
-        describe_limits, cfg.history_size, cfg.queue_size, cfg.rate_limit_interval
+        describe_limits,
+        cfg.history_size,
+        cfg.queue_size,
+        cfg.rate_limit_interval,
+        INTENSITIES,
+        STYLES,
     )
     describers = Describers(voices=voices, effects=effects, limits=limits)
+
+    rng = random.Random()
+    pickers = Pickers(
+        sound=functools.partial(random_sound_msg, rng, cfg.assets_dir),
+        curse=functools.partial(random_curse_msg, rng, voices_info),
+    )
 
     # Shared across HTTP and MCP so a caller's per-IP budget is the same
     # regardless of which transport it uses to trigger the light/speaker.
@@ -105,6 +118,7 @@ def main() -> None:
             cfg.auth_token,
             announcer.submit,
             describers,
+            pickers,
             announcer.snapshot,
             rate_limiter,
         )
@@ -122,6 +136,7 @@ def main() -> None:
             cfg.auth_token,
             announcer.submit,
             describers,
+            pickers,
             rate_limiter,
         )
         logger.info("Starting MCP endpoint on %s:%d", cfg.mcp_host, cfg.mcp_port)

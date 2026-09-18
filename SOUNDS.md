@@ -2,7 +2,7 @@
 
 Pełna lista plików dostępnych po uruchomieniu `scripts/download_effects.sh` -- nazwa
 na dysku to nazwa poniżej, **bez rozszerzenia** (np. `fight`, nie `fight.ogg`). Tę
-samą listę zwraca na żywo `GET /v1/metadata` w polu `effects`.
+samą listę zwraca na żywo `GET /v1/effects` w polu `effects`.
 
 Użycie w wiadomości (przykład):
 

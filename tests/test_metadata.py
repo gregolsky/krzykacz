@@ -7,6 +7,7 @@ from krzykacz.protocol import (
     SPEED_RANGE,
     VARIATION_RANGE,
 )
+from krzykacz.random_picks import INTENSITIES, STYLES
 
 
 def test_list_effects_returns_sorted_filenames(tmp_path):
@@ -59,7 +60,7 @@ def test_describe_effects_rereads_the_directory_on_each_call(tmp_path):
 
 
 def test_describe_limits_reports_protocol_and_instance_caps():
-    assert describe_limits(10, 5, 2.5) == {
+    assert describe_limits(10, 5, 2.5, INTENSITIES, STYLES) == {
         "max_content_bytes": MAX_CONTENT_BYTES,
         "max_spoken_bytes": MAX_SPOKEN_BYTES,
         "max_repeat": MAX_REPEAT_COUNT,
@@ -69,16 +70,20 @@ def test_describe_limits_reports_protocol_and_instance_caps():
         "speed_range": list(SPEED_RANGE),
         "variation_range": list(VARIATION_RANGE),
         "rhythm_range": list(RHYTHM_RANGE),
+        "curse_intensities": list(INTENSITIES),
+        "curse_styles": list(STYLES),
     }
 
 
 def test_describe_limits_ranges_are_json_friendly_lists():
     # They travel over HTTP as JSON; a tuple would serialize the same, but
     # asserting the type keeps the payload contract explicit.
-    limits = describe_limits(10, 5, 2.5)
+    limits = describe_limits(10, 5, 2.5, INTENSITIES, STYLES)
 
     assert isinstance(limits["speed_range"], list)
     assert limits["speed_range"] == [0.5, 2.0]
+    assert isinstance(limits["curse_intensities"], list)
+    assert isinstance(limits["curse_styles"], list)
 
 
 def test_the_three_views_do_not_overlap_in_keys():
@@ -86,7 +91,7 @@ def test_the_three_views_do_not_overlap_in_keys():
     # shouldn't have to resolve a key collision between them.
     voices = describe_voices("piper", ["darkman"], "darkman")
     effects = describe_effects("/nonexistent")
-    limits = describe_limits(10, 5, 2.5)
+    limits = describe_limits(10, 5, 2.5, INTENSITIES, STYLES)
 
     assert set(voices) & set(effects) == set()
     assert set(voices) & set(limits) == set()

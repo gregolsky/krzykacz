@@ -122,14 +122,16 @@ set a token.
 
 ### Rate limiting and audit logging
 
-Every call that actually triggers the light/speaker -- `POST /v1/publish`
-over HTTP, and the `send_message`/`play_recent_message` MCP tools -- is
-limited to one call per source IP per `KRZYKACZ_RATE_LIMIT_INTERVAL`
+Every call that actually triggers the light/speaker -- `POST /v1/publish`,
+`/v1/random-sound` and `/v1/random-curse` over HTTP, and the
+`send_message`/`play_recent_message`/`random_sound`/`random_curse` MCP tools
+-- is limited to one call per source IP per `KRZYKACZ_RATE_LIMIT_INTERVAL`
 seconds (default `10`); a caller over that gets `429` (HTTP) or a
 "rate limited" text result (MCP) instead of being queued. The limit is
-shared between the two transports, so one IP can't get two calls in by
-mixing them. Set it to `0` to disable. Read-only calls (every `GET`, and the
-`list_voices`/`list_effects` MCP tools) are never rate-limited.
+shared between the two transports and across all of these calls, so one IP
+can't get two calls in by mixing them. Set it to `0` to disable. Read-only
+calls (every `GET`, and the `list_voices`/`list_effects` MCP tools) are never
+rate-limited.
 
 Every HTTP request and MCP tool call is also logged one line at a time under
 the `krzykacz.audit` logger name (`ip=... action=... ...`), so
@@ -163,6 +165,37 @@ announcer's queue is full (see `KRZYKACZ_QUEUE_SIZE`), `401` if the token is
 missing/wrong, or `429 {"error": "rate limited"}` if this source IP already
 published within `KRZYKACZ_RATE_LIMIT_INTERVAL` seconds (see below). Every
 `GET` below is read-only and not rate-limited.
+
+#### `POST /v1/random-sound`
+
+Plays one random sound from the curated soundboard, no speech, no body:
+
+```bash
+curl -X POST -H "Authorization: Bearer <token>" \
+  http://192.168.1.50:8123/v1/random-sound
+```
+
+Responds `202 {"status": "queued", "content": "<fight>", "voice": null, "speed": null}`
+-- `content` is the effect tag that was picked, so you can see what fired.
+`503 {"error": "nothing to play"}` if no curated sounds are installed (see
+"Przekleństwa and random sounds" below for what "curated" means), otherwise
+the same `401`/`429` as `/v1/publish`.
+
+#### `POST /v1/random-curse`
+
+Says one random Polish przekleństwo in a random voice at a random speed, no
+body. `intensity` and `style` are optional query-string filters:
+
+```bash
+curl -X POST -H "Authorization: Bearer <token>" \
+  "http://192.168.1.50:8123/v1/random-curse?intensity=mild&style=funny"
+```
+
+Responds `202 {"status": "queued", "content": "Motyla noga!", "voice": "darkman", "speed": 1.05}`.
+An unset, unrecognized, or too-narrow `intensity`/`style` combination widens
+back to the full library rather than erroring -- see "Przekleństwa and random
+sounds" below for the valid values (also in `GET /v1/limits`). Same
+`401`/`429` as `/v1/publish`.
 
 #### `GET /v1/queue`
 
@@ -233,18 +266,28 @@ curl -H "Authorization: Bearer <token>" http://192.168.1.50:8123/v1/limits
   "max_repeat": 10,
   "history_size": 10,
   "queue_size": 10,
-  "rate_limit_interval": 10.0
+  "rate_limit_interval": 10.0,
+  "speed_range": [0.5, 2.0],
+  "variation_range": [0.0, 1.5],
+  "rhythm_range": [0.0, 1.5],
+  "curse_intensities": ["mild", "medium", "strong"],
+  "curse_styles": ["staropolskie", "modern", "funny", "grim"]
 }
 ```
 
 ### MCP
 
 Set `KRZYKACZ_MCP_ENABLED=1`. Exposes an MCP server over Streamable HTTP at
-`http://<host>:8124/mcp`, with two tools that speak:
+`http://<host>:8124/mcp`, with four tools that trigger the light/speaker:
 
 - `send_message(content, voice=None, repeat=None, speed=None, variation=None, rhythm=None)` -- speak new text
 - `play_recent_message(number=-1)` -- replay one of the last few messages
   instead of resubmitting its text
+- `random_sound()` -- play one random sound from the curated soundboard, no
+  speech
+- `random_curse(intensity=None, style=None)` -- say one random Polish
+  przekleństwo in a random voice at a random speed; see "Przekleństwa and
+  random sounds" below for the valid `intensity`/`style` values
 
 and two read-only ones that just report, mirroring `GET /v1/voices` and
 `GET /v1/effects` (not rate-limited, since they touch neither the lamp nor
@@ -328,7 +371,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 | `KRZYKACZ_ASSETS_DIR` | `/var/lib/krzykacz/assets` | directory holding sound effect files |
 | `KRZYKACZ_HISTORY` | `10` | how many recent messages to keep in memory |
 | `KRZYKACZ_QUEUE_SIZE` | `10` | max number of messages waiting to be played; anything beyond that is dropped (with a log warning) rather than queued indefinitely |
-| `KRZYKACZ_HTTP_ENABLED` | `0` | set to `1` to enable the HTTP endpoints (`POST /v1/publish`, plus `GET /v1/voices`, `/v1/effects`, `/v1/limits`, `/v1/queue`) |
+| `KRZYKACZ_HTTP_ENABLED` | `0` | set to `1` to enable the HTTP endpoints (`POST /v1/publish`, `/v1/random-sound`, `/v1/random-curse`, plus `GET /v1/voices`, `/v1/effects`, `/v1/limits`, `/v1/queue`) |
 | `KRZYKACZ_HTTP_HOST` | `0.0.0.0` | HTTP endpoint bind address |
 | `KRZYKACZ_HTTP_PORT` | `8123` | HTTP endpoint port |
 | `KRZYKACZ_MCP_ENABLED` | `0` | set to `1` to enable the MCP endpoint (requires `pip install mcp`, Python >= 3.10) |
@@ -372,6 +415,33 @@ message it's always a cache hit. This also means a long message with a high
 `repeat` gets truncated to whole copies rather than cut off mid-word.
 espeak-ng (the no-hardware fallback) keeps the old joined-text behavior --
 its WAV output doesn't concatenate.
+
+## Przekleństwa and random sounds 🎲
+
+`POST /v1/random-sound` / MCP `random_sound()` picks one file from
+`KRZYKACZ_ASSETS_DIR` at random and plays it with no speech. "Curated" means
+a filename with no extension -- `download_effects.sh` deliberately strips
+extensions from the soundboard it installs, so a bare name (`fight`,
+`8bit07`) is a deliberately-chosen effect, while a name with a dot
+(`interface-sounds_click_001.ogg`) is a leftover from a retired sound pack
+that pruning no longer removes. A hand-dropped file with an extension is
+still playable via an explicit `<name.ext>` tag on `send_message` -- it's
+just excluded from the random pool.
+
+`POST /v1/random-curse` / MCP `random_curse(intensity=None, style=None)`
+says one random Polish przekleństwo, hardcoded in `krzykacz/random_picks.py`
+(not configurable), in a random voice at a random speed:
+
+- `intensity` -- `mild`, `medium`, or `strong`
+- `style` -- `staropolskie` (archaic), `modern`, `funny`, or `grim` (folk
+  curses wishing harm)
+
+Both are optional and independent; leaving one unset, passing a value that
+isn't in the lists above, or a combination that matches nothing (e.g.
+`style=grim&intensity=mild` -- there are no mild grim curses) all widen back
+to the full library rather than failing the call, so this endpoint always
+says something. The valid values are also in `GET /v1/limits` as
+`curse_intensities`/`curse_styles`.
 
 ## Piper voices 🎙️
 

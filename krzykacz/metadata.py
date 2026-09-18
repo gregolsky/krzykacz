@@ -71,11 +71,19 @@ def describe_effects(assets_dir: str) -> Dict[str, object]:
 
 
 def describe_limits(
-    history_size: int, queue_size: int, rate_limit_interval: float
+    history_size: int,
+    queue_size: int,
+    rate_limit_interval: float,
+    curse_intensities: Sequence[str],
+    curse_styles: Sequence[str],
 ) -> Dict[str, object]:
     """The numbers a caller would otherwise have to hardcode from the README:
-    how long a message may be, how far `repeat` and `replay` reach, and how
-    often it may call at all."""
+    how long a message may be, how far `repeat` and `replay` reach, how often
+    it may call at all, and the valid random_curse filter values.
+
+    `curse_intensities`/`curse_styles` are passed in rather than imported
+    from krzykacz.random_picks directly -- that module already imports
+    list_effects from this one, and importing back would cycle."""
     return {
         "max_content_bytes": MAX_CONTENT_BYTES,
         "max_spoken_bytes": MAX_SPOKEN_BYTES,
@@ -88,4 +96,6 @@ def describe_limits(
         "speed_range": list(SPEED_RANGE),
         "variation_range": list(VARIATION_RANGE),
         "rhythm_range": list(RHYTHM_RANGE),
+        "curse_intensities": list(curse_intensities),
+        "curse_styles": list(curse_styles),
     }

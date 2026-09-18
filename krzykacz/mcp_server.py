@@ -8,6 +8,7 @@ from .audit import log_call
 from .auth import check_bearer_token
 from .metadata import Describers
 from .protocol import build_msg, build_repeat
+from .random_picks import INTENSITIES, STYLES, Pickers
 from .ratelimit import IpRateLimiter, rate_limit_or_log
 
 # The `mcp` package requires Python >=3.10 and isn't in requirements.txt --
@@ -125,6 +126,28 @@ _LIST_EFFECTS_DESCRIPTION = (
     "Read fresh from disk, read-only, and not rate-limited."
 )
 
+_RANDOM_SOUND_DESCRIPTION = (
+    "Play one random sound effect from the curated soundboard, with no "
+    "speech -- use it for a surprise noise, not a specific one (call "
+    "list_effects and send_message with a `<name>` tag instead if you want "
+    'a particular sound). Returns "queued: <effect name>" once accepted, '
+    '"dropped (queue full)" if the pending queue was already full, or a '
+    "rate-limit notice if this caller's IP called too recently."
+)
+
+_RANDOM_CURSE_DESCRIPTION = (
+    "Say one random Polish przekleństwo (mild euphemism through "
+    "full-strength swearing) in a random voice at a random speed -- use it "
+    "for comic relief, not for delivering an actual message. `intensity` "
+    f"narrows how strong it is: one of {', '.join(INTENSITIES)}. `style` "
+    f"narrows the register: one of {', '.join(STYLES)}. Both are optional; "
+    "leaving one unset, passing an unrecognized value, or a combination "
+    "that matches nothing all widen back to the full library rather than "
+    'failing. Returns "queued: <text>" once accepted, "dropped (queue '
+    'full)" if the pending queue was already full, or a rate-limit notice '
+    "if this caller's IP called too recently."
+)
+
 
 def _caller_ip() -> str:
     # Falls back to a shared "unknown" bucket, rather than skipping the rate
@@ -171,13 +194,16 @@ def _instructions(voices: Dict[str, object]) -> str:
         "krzykacz reads text aloud in Polish through a physical speaker and "
         "blinks a USB lamp while speaking -- it's a one-way announcer, not a "
         "conversational voice: there's no way to listen for a spoken reply. "
-        "Use send_message to speak new text, or play_recent_message to "
-        "replay one of the last few messages instead of retyping it; "
-        "list_voices and list_effects report what this particular instance "
-        "can play, without triggering anything. Each caller's IP is limited "
-        "to about one call at a time for the two speaking tools; a "
-        "rate-limit result from either is expected under bursty use -- wait "
-        "a moment and retry rather than looping on it."
+        "Use send_message to speak new text, play_recent_message to replay "
+        "one of the last few messages instead of retyping it, or "
+        "random_sound/random_curse to trigger a surprise pick instead of "
+        "choosing something specific; list_voices and list_effects report "
+        "what this particular instance can play, without triggering "
+        "anything. Each caller's IP is limited to about one call at a time "
+        "across all four of the triggering tools (send_message, "
+        "play_recent_message, random_sound, random_curse) -- a rate-limit "
+        "result from any of them is expected under bursty use, wait a "
+        "moment and retry rather than looping on it."
     )
     return (
         f"{base} TTS backend: {voices.get('tts')}. Available voices: "
@@ -186,7 +212,9 @@ def _instructions(voices: Dict[str, object]) -> str:
     )
 
 
-def _build_mcp_server(submit: Submit, describers: Describers, rate_limiter: IpRateLimiter):
+def _build_mcp_server(
+    submit: Submit, describers: Describers, pickers: Pickers, rate_limiter: IpRateLimiter
+):
     """Builds the MCPServer with its tools registered, but not yet bound to
     a host/port or wrapped for auth/IP capture. Split out from
     `build_mcp_app` so tests can inspect registered tool descriptions
@@ -250,6 +278,43 @@ def _build_mcp_server(submit: Submit, describers: Describers, rate_limiter: IpRa
         log_call("mcp.list_effects", _caller_ip())
         return describers.effects()
 
+    @mcp.tool(title="Play random sound", description=_RANDOM_SOUND_DESCRIPTION)
+    def random_sound() -> str:
+        ip = _caller_ip()
+        if not rate_limit_or_log(rate_limiter, ip, "mcp.random_sound"):
+            return _RATE_LIMITED_REPLY
+        msg = pickers.sound()
+        if msg is None:
+            log_call("mcp.random_sound", ip, status="nothing_to_play")
+            return "nothing to play: no curated sounds available"
+        queued = submit(msg)
+        log_call("mcp.random_sound", ip, content=msg.content, status="queued" if queued else "dropped")
+        return f"{_queue_reply(queued)}: {msg.content}"
+
+    @mcp.tool(title="Play random curse", description=_RANDOM_CURSE_DESCRIPTION)
+    def random_curse(intensity: Optional[str] = None, style: Optional[str] = None) -> str:
+        ip = _caller_ip()
+        if not rate_limit_or_log(rate_limiter, ip, "mcp.random_curse"):
+            return _RATE_LIMITED_REPLY
+        msg = pickers.curse(intensity, style)
+        if msg is None:
+            log_call(
+                "mcp.random_curse", ip, intensity=intensity, style=style, status="nothing_to_play"
+            )
+            return "nothing to play: no voices configured"
+        queued = submit(msg)
+        log_call(
+            "mcp.random_curse",
+            ip,
+            intensity=intensity,
+            style=style,
+            content=msg.content,
+            voice=msg.voice,
+            speed=msg.speed,
+            status="queued" if queued else "dropped",
+        )
+        return f"{_queue_reply(queued)}: {msg.content}"
+
     return mcp
 
 
@@ -258,6 +323,7 @@ def build_mcp_app(
     auth_token: Optional[str],
     submit: Submit,
     describers: Describers,
+    pickers: Pickers,
     rate_limiter: Optional[IpRateLimiter] = None,
 ):
     """Builds the Streamable HTTP ASGI app exposing the krzykacz MCP tools.
@@ -274,7 +340,7 @@ def build_mcp_app(
         ) from exc
 
     limiter = rate_limiter if rate_limiter is not None else IpRateLimiter.disabled()
-    mcp = _build_mcp_server(submit, describers, limiter)
+    mcp = _build_mcp_server(submit, describers, pickers, limiter)
     app = _wrap_auth(mcp.streamable_http_app(host=host), auth_token)
     return _wrap_client_ip(app)
 
@@ -285,13 +351,14 @@ def run_mcp_server(
     auth_token: Optional[str],
     submit: Submit,
     describers: Describers,
+    pickers: Pickers,
     rate_limiter: Optional[IpRateLimiter] = None,
 ) -> None:
     """Blocking call -- run in a dedicated thread."""
     # Build first: it raises the actionable "pip install mcp" error, whereas
     # importing uvicorn (an mcp dependency) first would fail with a bare
     # ModuleNotFoundError that doesn't say what to install.
-    app = build_mcp_app(host, auth_token, submit, describers, rate_limiter)
+    app = build_mcp_app(host, auth_token, submit, describers, pickers, rate_limiter)
 
     import uvicorn
 

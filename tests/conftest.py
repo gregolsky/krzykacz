@@ -1,5 +1,6 @@
 from krzykacz.config import Config
 from krzykacz.metadata import Describers
+from krzykacz.random_picks import Pickers
 from krzykacz.tts import Prosody
 
 
@@ -58,4 +59,14 @@ def make_describers(voices=None, effects=None, limits=None):
         voices=voices or (lambda: {"tts": "espeak", "voices": ["pl"], "default_voice": "pl"}),
         effects=effects or (lambda: {"effects": []}),
         limits=limits or (lambda: {"max_repeat": 10, "queue_size": 10}),
+    )
+
+
+def make_pickers(sound=None, curse=None):
+    """A Pickers bundle with stub actions, so a test only has to spell out
+    the one it actually asserts on. Defaults return None (nothing to play),
+    matching an instance with no curated sounds/voices configured."""
+    return Pickers(
+        sound=sound or (lambda: None),
+        curse=curse or (lambda intensity, style: None),
     )
