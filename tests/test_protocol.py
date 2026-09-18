@@ -1,14 +1,18 @@
 from krzykacz.protocol import (
     MAX_CONTENT_BYTES,
+    MAX_EFFECT_REPEAT,
+    MAX_EFFECTS,
     MAX_REPEAT_COUNT,
     RHYTHM_RANGE,
     SPEED_RANGE,
     VARIATION_RANGE,
+    Effect,
     Msg,
     Repeat,
+    Speech,
     parse,
     parse_tags,
-    split_effect,
+    split_segments,
 )
 
 
@@ -146,36 +150,117 @@ def test_truncation_does_not_break_multibyte_utf8():
     result.content.encode("utf-8").decode("utf-8")
 
 
-def test_split_effect_with_text():
-    assert split_effect("<boom.mp3> Testy padły") == ("boom.mp3", "Testy padły")
+def test_split_segments_leading_tag_with_text():
+    assert split_segments("<boom.mp3> Testy padły") == [
+        Effect(name="boom.mp3", count=1),
+        Speech("Testy padły"),
+    ]
 
 
-def test_split_effect_without_trailing_text():
-    assert split_effect("<boom.mp3>") == ("boom.mp3", "")
+def test_split_segments_tag_without_trailing_text():
+    assert split_segments("<boom.mp3>") == [Effect(name="boom.mp3", count=1)]
 
 
-def test_split_effect_no_tag():
-    assert split_effect("zwykla wiadomosc") == (None, "zwykla wiadomosc")
+def test_split_segments_no_tag():
+    assert split_segments("zwykla wiadomosc") == [Speech("zwykla wiadomosc")]
 
 
-def test_split_effect_rejects_path_traversal():
-    assert split_effect("<../../etc/passwd> tekst") == (None, "<../../etc/passwd> tekst")
+def test_split_segments_empty_content():
+    assert split_segments("") == []
 
 
-def test_split_effect_rejects_slash_in_name():
-    assert split_effect("<sub/dir.mp3> tekst") == (None, "<sub/dir.mp3> tekst")
+def test_split_segments_rejects_path_traversal():
+    assert split_segments("<../../etc/passwd> tekst") == [Speech("<../../etc/passwd> tekst")]
 
 
-def test_split_effect_rejects_bare_dots():
-    assert split_effect("<..> tekst") == (None, "<..> tekst")
+def test_split_segments_rejects_slash_in_name():
+    assert split_segments("<sub/dir.mp3> tekst") == [Speech("<sub/dir.mp3> tekst")]
 
 
-def test_split_effect_empty_tag_name():
-    assert split_effect("<> tekst") == (None, "<> tekst")
+def test_split_segments_rejects_bare_dots():
+    assert split_segments("<..> tekst") == [Speech("<..> tekst")]
 
 
-def test_split_effect_strips_whitespace_in_name():
-    assert split_effect("< boom.mp3 > tekst") == ("boom.mp3", "tekst")
+def test_split_segments_empty_tag_name():
+    assert split_segments("<> tekst") == [Speech("<> tekst")]
+
+
+def test_split_segments_strips_whitespace_in_name():
+    assert split_segments("< boom.mp3 > tekst") == [
+        Effect(name="boom.mp3", count=1),
+        Speech("tekst"),
+    ]
+
+
+def test_split_segments_interleaves_speech_and_effects_in_order():
+    assert split_segments("<game_over> Testy padły <fight> Naprawiam") == [
+        Effect(name="game_over", count=1),
+        Speech("Testy padły"),
+        Effect(name="fight", count=1),
+        Speech("Naprawiam"),
+    ]
+
+
+def test_split_segments_tag_can_appear_mid_text_not_just_leading():
+    assert split_segments("Uwaga <siren> teraz") == [
+        Speech("Uwaga"),
+        Effect(name="siren", count=1),
+        Speech("teraz"),
+    ]
+
+
+def test_split_segments_adjacent_tags_stay_as_separate_effect_segments():
+    # No text between them, but each <...> is still its own Effect --
+    # Announcer is the one that merges a run of these into one play call.
+    assert split_segments("<step><step> Ktoś idzie") == [
+        Effect(name="step", count=1),
+        Effect(name="step", count=1),
+        Speech("Ktoś idzie"),
+    ]
+
+
+def test_split_segments_star_suffix_sets_repeat_count():
+    assert split_segments("<footstep*6> Ktoś idzie") == [
+        Effect(name="footstep", count=6),
+        Speech("Ktoś idzie"),
+    ]
+
+
+def test_split_segments_star_suffix_is_capped_at_max_effect_repeat():
+    assert split_segments(f"<footstep*{MAX_EFFECT_REPEAT + 50}>") == [
+        Effect(name="footstep", count=MAX_EFFECT_REPEAT)
+    ]
+
+
+def test_split_segments_star_suffix_zero_or_negative_falls_back_to_one():
+    assert split_segments("<footstep*0>") == [Effect(name="footstep", count=1)]
+
+
+def test_split_segments_total_effects_capped_at_max_effects():
+    content = " ".join(f"<step{i}>" for i in range(MAX_EFFECTS + 5))
+    segments = split_segments(content)
+    assert sum(seg.count for seg in segments if isinstance(seg, Effect)) == MAX_EFFECTS
+    assert [seg.name for seg in segments] == [f"step{i}" for i in range(MAX_EFFECTS)]
+
+
+def test_split_segments_star_suffix_is_clamped_to_the_remaining_budget():
+    # Each tag's own "*N" is already capped at MAX_EFFECT_REPEAT (10), so it
+    # takes two of them to exceed MAX_EFFECTS (16) -- the second is clamped
+    # to whatever's left rather than dropped outright.
+    content = f"<a*{MAX_EFFECT_REPEAT}> <b*{MAX_EFFECT_REPEAT}>"
+    segments = split_segments(content)
+    assert segments == [
+        Effect(name="a", count=MAX_EFFECT_REPEAT),
+        Effect(name="b", count=MAX_EFFECTS - MAX_EFFECT_REPEAT),
+    ]
+
+
+def test_split_segments_invalid_tag_merges_into_surrounding_text():
+    assert split_segments("start <../nope> <boom.mp3> end") == [
+        Speech("start <../nope>"),
+        Effect(name="boom.mp3", count=1),
+        Speech("end"),
+    ]
 
 
 def test_voice_tag_with_invalid_type_is_ignored():

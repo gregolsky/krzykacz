@@ -11,7 +11,13 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Tuple, Union
 
-from .procutil import aplay_cmd, aplay_raw_cmd, communicate_or_kill
+from .procutil import (
+    PLAYBACK_TIMEOUT_SLACK_S,
+    aplay_cmd,
+    aplay_raw_cmd,
+    communicate_or_kill,
+    raw_pcm_duration_s,
+)
 from .protocol import preview
 
 logger = logging.getLogger(__name__)
@@ -21,23 +27,17 @@ logger = logging.getLogger(__name__)
 # every miss.
 SWEEP_INTERVAL_S = 3600.0
 
-# Both timeouts below scale with how much audio/text is involved, rather than
-# being a flat constant -- a flat 60s/30s was simultaneously too tight for a
-# long message on a slow Pi and too loose for a one-line alert. The
-# multipliers are estimates (~15 Polish chars/sec of speech); measure the
-# real numbers on target hardware if messages start timing out.
+# Scales with how much text is involved, rather than being a flat constant --
+# a flat 60s was simultaneously too tight for a long message on a slow Pi and
+# too loose for a one-line alert. The multiplier is an estimate (~15 Polish
+# chars/sec of speech); measure the real number on target hardware if
+# messages start timing out.
 SYNTHESIS_TIMEOUT_BASE_S = 30.0
 SYNTHESIS_TIMEOUT_PER_BYTE_S = 0.1
-PLAYBACK_TIMEOUT_SLACK_S = 10.0
 
 
 def _synthesis_timeout(text: str) -> float:
     return SYNTHESIS_TIMEOUT_BASE_S + len(text.encode("utf-8")) * SYNTHESIS_TIMEOUT_PER_BYTE_S
-
-
-def _raw_pcm_duration_s(audio: bytes, sample_rate: int, channels: int) -> float:
-    bytes_per_frame = 2 * channels  # S16_LE
-    return len(audio) / (sample_rate * bytes_per_frame)
 
 
 def _wav_duration_s(audio: bytes) -> float:
@@ -208,7 +208,7 @@ class PiperTts(Tts):
             aplay_raw_cmd(self.alsa_device, self.sample_rate, channels=1),
             stdin=subprocess.PIPE,
         )
-        duration = _raw_pcm_duration_s(audio, self.sample_rate, channels=1)
+        duration = raw_pcm_duration_s(audio, self.sample_rate, channels=1)
         communicate_or_kill(aplay, audio, timeout=duration + PLAYBACK_TIMEOUT_SLACK_S)
 
 

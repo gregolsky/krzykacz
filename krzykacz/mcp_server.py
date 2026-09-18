@@ -118,12 +118,15 @@ _LIST_VOICES_DESCRIPTION = (
 )
 
 _LIST_EFFECTS_DESCRIPTION = (
-    "List the sound-effect filenames this instance can play before a "
-    "message. To use one, prefix send_message's `content` with it in "
-    'angle brackets, e.g. "<game_over> Tests failed" -- the effect plays '
-    "first, then the rest of the text is read aloud. A name that isn't "
-    "in this list is skipped silently rather than failing the message. "
-    "Read fresh from disk, read-only, and not rate-limited."
+    "List the sound-effect filenames this instance can play as part of a "
+    "message. To use one, wrap it in angle brackets anywhere in "
+    "send_message's `content` -- not just at the start -- e.g. "
+    '"<game_over> Tests failed <fight> Fixing now" plays game_over, says '
+    '"Tests failed", plays fight, then says "Fixing now", in that order. '
+    'Suffix a tag with "*N" (e.g. "<footstep*6>") to play that one sound N '
+    "times back to back instead of writing the tag out N times. A name "
+    "that isn't in this list is skipped silently rather than failing the "
+    "message. Read fresh from disk, read-only, and not rate-limited."
 )
 
 _RANDOM_SOUND_DESCRIPTION = (
@@ -180,8 +183,12 @@ def _send_message_description(voices: Dict[str, object]) -> str:
         "fast, 0.7 slower), `variation` (how much the voice strays from its "
         "average -- ~0.667 normal, lower is flatter and more monotone, "
         "higher is livelier but can wobble), and `rhythm` (how much "
-        "per-syllable timing strays -- ~0.8 normal). `content` longer "
-        "than about a minute of speech is truncated. Returns \"queued\" once "
+        "per-syllable timing strays -- ~0.8 normal). A sound effect can be "
+        'woven into `content` anywhere by wrapping its name in angle '
+        'brackets, e.g. "<game_over> Tests failed" or "Uwaga <siren> teraz" '
+        "-- see list_effects for what's available and the \"*N\" repeat "
+        "suffix. `content` longer than about a minute of speech is "
+        "truncated. Returns \"queued\" once "
         'accepted, "dropped (queue full)" if the pending queue was already '
         "full, or a rate-limit notice if this caller's IP called too "
         "recently -- in that case, wait and retry rather than resubmitting "

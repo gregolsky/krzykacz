@@ -63,23 +63,42 @@ voice (with a warning in the log). The `espeak` backend (`KRZYKACZ_TTS=espeak`)
 doesn't know these names -- there, `voice` is passed straight through as an
 `espeak-ng` language/voice code (e.g. `pl`, `en`).
 
-If the body starts with `<filename>`, a file of that name is played from
-`KRZYKACZ_ASSETS_DIR` before the rest of the text is read (any format `ffmpeg`
-can decode -- mp3, ogg, wav, ...), e.g.:
+A sound effect can be woven anywhere into the body by wrapping its filename
+in `<angle brackets>` -- not just at the start -- and everything plays back
+in the order it appears: sounds and speech, interleaved. A file of that name
+is played from `KRZYKACZ_ASSETS_DIR` (any format `ffmpeg` can decode -- mp3,
+ogg, wav, ...) at that point, e.g.:
 
 ```bash
 curl -d "<boom.mp3> Tests failed" https://ntfy.sh/<your-topic>
+curl -d "Uwaga <siren.mp3> ewakuacja" https://ntfy.sh/<your-topic>
+curl -d "<game_over> Tests failed <fight> Fixing now" https://ntfy.sh/<your-topic>
 ```
 
+Suffix a tag with `*N` to play that one sound `N` times back to back
+(capped at 10, `MAX_EFFECT_REPEAT`) without writing the tag out N times --
+useful for e.g. a run of footsteps:
+
+```bash
+curl -d "<footstep_concrete_000*6> Ktoś idzie" https://ntfy.sh/<your-topic>
+```
+
+Adjacent sounds (several tags in a row, or one `*N` tag) are decoded
+separately but played back as a single gapless clip, rather than as N
+separate device opens. A message may carry at most 16 effect hits total
+(`MAX_EFFECTS`, `*N` counted); past that the surplus is dropped rather than
+the message failing.
+
 The filename can't contain `/` or `..` (protects against escaping the assets
-directory). A missing effect file doesn't block reading the text -- the effect
-is simply skipped.
+directory). A missing effect file doesn't block the rest of the message --
+that one sound is simply skipped.
 
 A message longer than 800 bytes (`MAX_CONTENT_BYTES`, roughly a minute of
 speech) is truncated -- this is meant to be read aloud on the spot, not
 archived. The fully-joined text after `repeat` duplication is separately
 capped at 1600 bytes (`MAX_SPOKEN_BYTES`), so a high `repeat` on a long message
-can't run for minutes either.
+can't run for minutes either. `repeat` replays the whole sequence, sounds
+included, not just the spoken part.
 
 ### Full example
 
@@ -89,8 +108,9 @@ curl -H "Tags: voice=justyna,repeat=2" \
   https://ntfy.sh/<your-topic>
 ```
 
-The `game_over` effect plays once, then, in the `justyna`
-voice: "Tests failed. Powtarzam! Tests failed."
+In the `justyna` voice, this plays: game_over, "Tests failed.", "Powtarzam!",
+game_over again, "Tests failed." again -- `repeat=2` replays the effect too,
+not just the sentence.
 
 ### Sending from the command line ⌨️
 
@@ -101,6 +121,7 @@ export KRZYKACZ_TOPIC=<your-topic>
 ./scripts/krzykacz.sh "Backup finished"
 ./scripts/krzykacz.sh --voice justyna --repeat 2 "Tests failed"
 ./scripts/krzykacz.sh --effect game_over "Something broke"
+./scripts/krzykacz.sh --effect fight --effect game_over "Multiple sounds, then speech"
 ./scripts/krzykacz.sh --topic other-topic --server https://ntfy.example.com "Hello"
 ```
 
@@ -237,7 +258,7 @@ backed by a multi-speaker model appear here as ordinary names, one per speaker.
 
 #### `GET /v1/effects`
 
-What can be named in a `<file>` tag:
+What can be named in a `<file>` tag, anywhere in the body:
 
 ```bash
 curl -H "Authorization: Bearer <token>" http://192.168.1.50:8123/v1/effects
@@ -264,6 +285,8 @@ curl -H "Authorization: Bearer <token>" http://192.168.1.50:8123/v1/limits
   "max_content_bytes": 800,
   "max_spoken_bytes": 1600,
   "max_repeat": 10,
+  "max_effects": 16,
+  "max_effect_repeat": 10,
   "history_size": 10,
   "queue_size": 10,
   "rate_limit_interval": 10.0,

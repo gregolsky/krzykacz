@@ -4,10 +4,19 @@ Pełna lista plików dostępnych po uruchomieniu `scripts/download_effects.sh` -
 na dysku to nazwa poniżej, **bez rozszerzenia** (np. `fight`, nie `fight.ogg`). Tę
 samą listę zwraca na żywo `GET /v1/effects` w polu `effects`.
 
-Użycie w wiadomości (przykład):
+Użycie w wiadomości (przykład) -- tag można umieścić w dowolnym miejscu
+treści, nie tylko na początku, a kilka dźwięków można przeplatać z tekstem:
 
 ```bash
 curl -d "<fight> Zaczynamy" https://ntfy.sh/<topic>
+curl -d "<game_over> Testy padły <fight> Naprawiam" https://ntfy.sh/<topic>
+```
+
+Sufiks `*N` odtwarza ten sam dźwięk N razy pod rząd (max 10), bez pisania
+tagu N razy:
+
+```bash
+curl -d "<footstep_concrete_000*6> Ktoś idzie" https://ntfy.sh/<topic>
 ```
 
 Źródła, obie CC0 (public domain, bez wymogu podania autora):

@@ -129,13 +129,15 @@ def random_sound_msg(rng: random.Random, assets_dir: str) -> Optional[Msg]:
     still playable by tagging it explicitly. Returns None if there is nothing
     curated to pick (e.g. an empty or unreadable assets directory).
 
-    Also excludes any name containing "<" or ">" -- such a name would break
-    out of the f"<{name}>" tag built below and get misparsed by
-    protocol.split_effect as a different effect name plus stray spoken text."""
+    Also excludes any name containing "<", ">" or "*" -- such a name would
+    break out of the f"<{name}>" tag built below and get misparsed by
+    protocol.split_segments, either as a different effect name plus stray
+    spoken text ("<", ">"), or, for a name ending in "*<digits>", as a
+    repeat-count suffix on a different effect name ("*")."""
     names = [
         name
         for name in list_effects(assets_dir)
-        if "." not in name and "<" not in name and ">" not in name
+        if "." not in name and "<" not in name and ">" not in name and "*" not in name
     ]
     if not names:
         return None

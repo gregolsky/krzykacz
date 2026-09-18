@@ -8,7 +8,7 @@ SERVER="${KRZYKACZ_NTFY_SERVER:-https://ntfy.sh}"
 TOPIC="${KRZYKACZ_TOPIC:-}"
 VOICE=""
 REPEAT=""
-EFFECT=""
+EFFECTS=()
 
 usage() {
     cat <<EOF
@@ -19,13 +19,15 @@ Options:
   --server URL    ntfy server (default: \$KRZYKACZ_NTFY_SERVER or https://ntfy.sh)
   --voice NAME    Piper voice name (e.g. justyna, jarvis, meski, zenski)
   --repeat N      speak the message N times, separated by "Powtarzam!" (capped at 10)
-  --effect FILE   play a sound effect from KRZYKACZ_ASSETS_DIR before speaking
+  --effect FILE   play a sound effect from KRZYKACZ_ASSETS_DIR before speaking;
+                   repeat the flag to play several, in order, before the message
   -h, --help      show this help
 
 Examples:
   $(basename "$0") "Backup finished"
   $(basename "$0") --voice justyna --repeat 2 "Tests failed"
   $(basename "$0") --effect game_over "Something broke"
+  $(basename "$0") --effect fight --effect game_over "Multiple sounds, then speech"
   $(basename "$0") --topic other-topic "Hello from another topic"
 EOF
 }
@@ -49,7 +51,7 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         --effect)
-            EFFECT="${2:?--effect requires a value}"
+            EFFECTS+=("${2:?--effect requires a value}")
             shift 2
             ;;
         -h|--help)
@@ -83,10 +85,13 @@ if [ -z "$TOPIC" ]; then
     exit 1
 fi
 
-CONTENT="$MESSAGE"
-if [ -n "$EFFECT" ]; then
-    CONTENT="<$EFFECT> $MESSAGE"
+PREFIX=""
+if [ "${#EFFECTS[@]}" -gt 0 ]; then
+    for effect in "${EFFECTS[@]}"; do
+        PREFIX="$PREFIX<$effect> "
+    done
 fi
+CONTENT="$PREFIX$MESSAGE"
 
 TAGS=""
 if [ -n "$VOICE" ]; then

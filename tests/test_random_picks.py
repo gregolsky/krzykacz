@@ -1,7 +1,7 @@
 import logging
 import random
 
-from krzykacz.protocol import MAX_CONTENT_BYTES, SPEED_RANGE, split_effect
+from krzykacz.protocol import MAX_CONTENT_BYTES, SPEED_RANGE, Effect, split_segments
 from krzykacz.random_picks import (
     CURSES,
     INTENSITIES,
@@ -125,14 +125,25 @@ def test_random_sound_excludes_names_with_extensions(tmp_path):
         assert msg.content == "<fight>"
 
 
+def test_random_sound_excludes_names_with_a_star(tmp_path):
+    # A name ending in "*<digits>" would be misread as a repeat-count
+    # suffix on a different effect name once built into "<name>" -- see
+    # random_sound_msg's docstring.
+    (tmp_path / "fight").write_bytes(b"x")
+    (tmp_path / "boom*3").write_bytes(b"x")
+
+    rng = random.Random(0)
+    for _ in range(20):
+        msg = random_sound_msg(rng, str(tmp_path))
+        assert msg.content == "<fight>"
+
+
 def test_random_sound_msg_has_no_spoken_text(tmp_path):
     (tmp_path / "fight").write_bytes(b"x")
 
     msg = random_sound_msg(random.Random(0), str(tmp_path))
 
-    name, spoken = split_effect(msg.content)
-    assert name == "fight"
-    assert spoken == ""
+    assert split_segments(msg.content) == [Effect(name="fight", count=1)]
 
 
 def test_random_sound_returns_none_for_empty_assets_dir(tmp_path):

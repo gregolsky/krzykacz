@@ -3,6 +3,21 @@ from __future__ import annotations
 import subprocess
 from typing import List, Optional
 
+# Slack added on top of the audio's own duration when sizing communicate_or_kill's
+# timeout for a playback call -- covers aplay's own startup/flush overhead, which
+# a flat multiple of the audio length wouldn't for a very short clip. Shared by
+# every backend that plays raw PCM (krzykacz.tts, krzykacz.effects) so they all
+# give aplay the same margin.
+PLAYBACK_TIMEOUT_SLACK_S = 10.0
+
+
+def raw_pcm_duration_s(audio: bytes, sample_rate: int, channels: int) -> float:
+    """Seconds of playback in `audio` -- signed 16-bit PCM at `sample_rate`/
+    `channels`. Used to size a playback call's kill timeout to the audio's
+    own length rather than a flat constant."""
+    bytes_per_frame = 2 * channels  # S16_LE
+    return len(audio) / (sample_rate * bytes_per_frame)
+
 
 def aplay_cmd(alsa_device: Optional[str]) -> List[str]:
     """Builds an `aplay` invocation for audio that carries its own header

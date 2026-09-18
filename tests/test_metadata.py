@@ -1,6 +1,8 @@
 from krzykacz.metadata import describe_effects, describe_limits, describe_voices, list_effects
 from krzykacz.protocol import (
     MAX_CONTENT_BYTES,
+    MAX_EFFECT_REPEAT,
+    MAX_EFFECTS,
     MAX_REPEAT_COUNT,
     MAX_SPOKEN_BYTES,
     RHYTHM_RANGE,
@@ -64,6 +66,8 @@ def test_describe_limits_reports_protocol_and_instance_caps():
         "max_content_bytes": MAX_CONTENT_BYTES,
         "max_spoken_bytes": MAX_SPOKEN_BYTES,
         "max_repeat": MAX_REPEAT_COUNT,
+        "max_effects": MAX_EFFECTS,
+        "max_effect_repeat": MAX_EFFECT_REPEAT,
         "history_size": 10,
         "queue_size": 5,
         "rate_limit_interval": 2.5,

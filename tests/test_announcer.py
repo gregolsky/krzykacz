@@ -65,12 +65,29 @@ class ConcatenatingFakeTts(FakeTts):
 
 
 class FakeEffects(Effects):
-    def __init__(self, events=None):
-        self.played = []
-        self.events = events
+    """decode() records which resolved path was asked for (`played`, kept
+    under its old name since it answers the same question existing tests
+    ask -- "which effect files got used") and returns deterministic bytes
+    keyed by filename, so a test can tell two different effects apart.
+    play_pcm() records what it was actually handed to play, separately --
+    that's what Announcer calls during the light-on window."""
 
-    def play(self, path):
+    def __init__(self, events=None, fail_decode_on=None):
+        self.played = []
+        self.play_pcm_calls = []
+        self.events = events
+        self.fail_decode_on = fail_decode_on
+
+    def decode(self, path):
         self.played.append(path)
+        if self.events is not None:
+            self.events.append("effects.decode")
+        if self.fail_decode_on and path.name == self.fail_decode_on:
+            raise RuntimeError("boom")
+        return f"pcm:{path.name}".encode()
+
+    def play_pcm(self, data):
+        self.play_pcm_calls.append(data)
         if self.events is not None:
             self.events.append("effects.play")
 
@@ -175,6 +192,7 @@ def test_effect_tag_plays_sound_then_speaks_rest(tmp_path):
     drain(announcer)
 
     assert effects.played == [tmp_path / "boom.mp3"]
+    assert effects.play_pcm_calls == [b"pcm:boom.mp3"]
     assert tts.said == ["Testy padły."]
 
 
@@ -365,7 +383,9 @@ def test_repeat_count_default_speaks_once(tmp_path):
     assert tts.said == ["pojedyncza."]
 
 
-def test_repeat_count_with_effect_tag_only_repeats_spoken_part(tmp_path):
+def test_repeat_count_with_effect_tag_replays_the_whole_sequence(tmp_path):
+    # Approved behaviour: `repeat` now replays sounds and speech alike, not
+    # just the spoken part -- see krzykacz.announcer.Announcer._render_with_effects.
     (tmp_path / "boom.mp3").write_bytes(b"fake mp3")
     tts = FakeTts()
     effects = FakeEffects()
@@ -375,8 +395,18 @@ def test_repeat_count_with_effect_tag_only_repeats_spoken_part(tmp_path):
     announcer.submit(Msg(content="<boom.mp3> Testy padły", repeat_count=2))
     drain(announcer)
 
+    # The effect is decoded once and reused for both passes -- not
+    # re-decoded per repeat.
     assert effects.played == [tmp_path / "boom.mp3"]
-    assert tts.said == ["Testy padły. Powtarzam! Testy padły."]
+    assert effects.play_pcm_calls == [b"pcm:boom.mp3", b"pcm:boom.mp3"]
+    # Likewise the spoken body and the "Powtarzam!" separator are each
+    # synthesized once and reused.
+    assert tts.said == ["Testy padły.", "Powtarzam!"]
+    assert tts.played == [
+        "Testy padły.".encode("utf-8"),
+        "Powtarzam!".encode("utf-8"),
+        "Testy padły.".encode("utf-8"),
+    ]
 
 
 def test_effect_path_traversal_is_rejected(tmp_path):
@@ -491,6 +521,20 @@ def test_effect_plays_after_light_on_and_before_speech(tmp_path):
     assert play_idx < last_off_idx
 
 
+def test_effects_decode_also_happens_before_light_turns_on(tmp_path):
+    (tmp_path / "boom.mp3").write_bytes(b"fake")
+    events = []
+    light = FakeLight(events=events)
+    effects = FakeEffects(events=events)
+    announcer = make_announcer(tmp_path, light=light, effects=effects)
+    announcer.start()
+
+    announcer.submit(Msg(content="<boom.mp3>"))
+    drain(announcer)
+
+    assert events.index("effects.decode") < events.index("light.on")
+
+
 def test_repeat_count_is_truncated_to_max_spoken_bytes(tmp_path):
     tts = FakeTts()
     announcer = make_announcer(tmp_path, tts=tts)
@@ -539,3 +583,117 @@ def test_snapshot_is_idle_after_draining(tmp_path):
     drain(announcer)
 
     assert announcer.snapshot() == {"playing": None, "pending": []}
+
+
+# --- Interleaved sounds/speech (issue #1: multiple sounds in one message) ---
+
+
+def test_multiple_effects_interleaved_with_speech_play_in_order(tmp_path):
+    (tmp_path / "game_over.mp3").write_bytes(b"1")
+    (tmp_path / "fight.mp3").write_bytes(b"2")
+    events = []
+    tts = FakeTts(events=events)
+    effects = FakeEffects(events=events)
+    announcer = make_announcer(tmp_path, tts=tts, effects=effects)
+    announcer.start()
+
+    announcer.submit(Msg(content="<game_over.mp3> Testy padły <fight.mp3> Naprawiam"))
+    drain(announcer)
+
+    assert effects.played == [tmp_path / "game_over.mp3", tmp_path / "fight.mp3"]
+    assert effects.play_pcm_calls == [b"pcm:game_over.mp3", b"pcm:fight.mp3"]
+    assert tts.said == ["Testy padły.", "Naprawiam."]
+    # Playback order matches the order the tags/text appeared in the message.
+    play_events = [e for e in events if e in ("effects.play", "tts.play")]
+    assert play_events == ["effects.play", "tts.play", "effects.play", "tts.play"]
+
+
+def test_adjacent_effect_tags_are_decoded_separately_but_played_as_one_clip(tmp_path):
+    # The issue's case: a run of the same sound, played back to back with no
+    # gap -- see krzykacz.effects.Effects.decode's docstring on why merging
+    # at the PCM level (one play_pcm call) is both cheaper and gapless
+    # compared to one play() call per hit.
+    (tmp_path / "step.mp3").write_bytes(b"1")
+    tts = FakeTts()
+    effects = FakeEffects()
+    announcer = make_announcer(tmp_path, tts=tts, effects=effects)
+    announcer.start()
+
+    announcer.submit(Msg(content="<step.mp3><step.mp3><step.mp3> Ktoś idzie"))
+    drain(announcer)
+
+    assert effects.played == [tmp_path / "step.mp3"] * 3
+    assert effects.play_pcm_calls == [b"pcm:step.mp3" * 3]
+    assert tts.said == ["Ktoś idzie."]
+
+
+def test_effect_star_suffix_plays_that_many_copies_as_one_clip(tmp_path):
+    (tmp_path / "step.mp3").write_bytes(b"1")
+    effects = FakeEffects()
+    announcer = make_announcer(tmp_path, effects=effects)
+    announcer.start()
+
+    announcer.submit(Msg(content="<step.mp3*6> Ktoś idzie"))
+    drain(announcer)
+
+    assert effects.played == [tmp_path / "step.mp3"]  # decoded once
+    assert effects.play_pcm_calls == [b"pcm:step.mp3" * 6]  # played six times over
+
+
+def test_unresolvable_effect_among_several_is_skipped_not_fatal(tmp_path):
+    (tmp_path / "boom.mp3").write_bytes(b"1")
+    tts = FakeTts()
+    effects = FakeEffects()
+    announcer = make_announcer(tmp_path, tts=tts, effects=effects)
+    announcer.start()
+
+    announcer.submit(Msg(content="<brak.mp3> Uwaga <boom.mp3> Teraz"))
+    drain(announcer)
+
+    assert effects.played == [tmp_path / "boom.mp3"]
+    assert effects.play_pcm_calls == [b"pcm:boom.mp3"]
+    assert tts.said == ["Uwaga.", "Teraz."]
+
+
+def test_effect_decode_failure_does_not_block_the_rest_of_the_message(tmp_path):
+    (tmp_path / "boom.mp3").write_bytes(b"1")
+    (tmp_path / "bad.mp3").write_bytes(b"2")
+    tts = FakeTts()
+    effects = FakeEffects(fail_decode_on="bad.mp3")
+    announcer = make_announcer(tmp_path, tts=tts, effects=effects)
+    announcer.start()
+
+    announcer.submit(Msg(content="<bad.mp3> Uwaga <boom.mp3> Teraz"))
+    drain(announcer)
+
+    assert effects.play_pcm_calls == [b"pcm:boom.mp3"]
+    assert tts.said == ["Uwaga.", "Teraz."]
+
+
+def test_no_effects_message_still_uses_the_single_synthesis_fast_path(tmp_path):
+    # A message with no tags at all must still go through the original
+    # single-Speech-segment path (_render_plain), not the general
+    # per-run renderer -- guards the repeat/cache optimizations above,
+    # which only hold for that fast path.
+    tts = ConcatenatingFakeTts()
+    announcer = make_announcer(tmp_path, tts=tts)
+    announcer.start()
+
+    announcer.submit(Msg(content="zwykla wiadomosc"))
+    drain(announcer)
+
+    assert tts.said == ["zwykla wiadomosc."]
+
+
+def test_effects_only_message_speaks_nothing(tmp_path):
+    (tmp_path / "boom.mp3").write_bytes(b"1")
+    tts = FakeTts()
+    effects = FakeEffects()
+    announcer = make_announcer(tmp_path, tts=tts, effects=effects)
+    announcer.start()
+
+    announcer.submit(Msg(content="<boom.mp3>"))
+    drain(announcer)
+
+    assert tts.said == []
+    assert effects.play_pcm_calls == [b"pcm:boom.mp3"]

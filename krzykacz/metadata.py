@@ -6,6 +6,8 @@ from typing import Callable, Dict, List, NamedTuple, Sequence
 
 from .protocol import (
     MAX_CONTENT_BYTES,
+    MAX_EFFECT_REPEAT,
+    MAX_EFFECTS,
     MAX_REPEAT_COUNT,
     MAX_SPOKEN_BYTES,
     RHYTHM_RANGE,
@@ -88,6 +90,11 @@ def describe_limits(
         "max_content_bytes": MAX_CONTENT_BYTES,
         "max_spoken_bytes": MAX_SPOKEN_BYTES,
         "max_repeat": MAX_REPEAT_COUNT,
+        # How many effect tags (a "<name*N>" suffix counted as N) one message
+        # may pack in, and how high N itself may go -- see
+        # krzykacz.protocol.split_segments.
+        "max_effects": MAX_EFFECTS,
+        "max_effect_repeat": MAX_EFFECT_REPEAT,
         "history_size": history_size,
         "queue_size": queue_size,
         "rate_limit_interval": rate_limit_interval,

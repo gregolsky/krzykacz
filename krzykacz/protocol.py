@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -15,14 +15,26 @@ MAX_CONTENT_BYTES = 800
 # Announcer._announce, after REPEAT_SEPARATOR.join(...).
 MAX_SPOKEN_BYTES = 1600
 
-_EFFECT_TAG_RE = re.compile(r"^<([^<>]+)>\s*(.*)$", re.DOTALL)
-
-
 MAX_VOICE_CHARS = 64
 _VOICE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 MAX_REPEAT_COUNT = 10
 REPEAT_SEPARATOR = " Powtarzam! "
+
+# A tag's own repeat suffix, e.g. "<footstep*6>" -- distinct from the
+# message-wide `repeat` tag (MAX_REPEAT_COUNT/REPEAT_SEPARATOR above), which
+# replays the whole segment sequence rather than one sound.
+MAX_EFFECT_REPEAT = 10
+
+# Total effect hits (sum of every tag's count, "*N" included) allowed in one
+# message. Bounds how much decoded PCM Announcer._announce holds in memory at
+# once -- see krzykacz.effects.Effects.decode -- the same never-fail-the-
+# message spirit as MAX_REPEAT_COUNT: a message with more is played with the
+# surplus dropped, not rejected outright.
+MAX_EFFECTS = 16
+
+_SEGMENT_TAG_RE = re.compile(r"<([^<>]+)>")
+_EFFECT_REPEAT_RE = re.compile(r"^(.+)\*(\d+)$")
 
 # Accepted ranges for the three synthesis knobs. Out-of-range values are
 # clamped rather than rejected (same spirit as `repeat`). `speed` is capped
@@ -52,6 +64,31 @@ class Repeat:
 
 
 Envelope = Union[Msg, Repeat]
+
+
+@dataclass(frozen=True)
+class Effect:
+    """One sound-effect tag from message content, e.g. "<footstep*3>" ->
+    Effect(name="footstep", count=3). `name` is a bare filename (see
+    split_segments' validation) resolved against the assets directory by
+    Announcer._resolve_effect."""
+
+    name: str
+    count: int = 1
+
+
+@dataclass(frozen=True)
+class Speech:
+    """One run of literal text from message content, to be read aloud."""
+
+    text: str
+
+
+# One item of a message's content, in the order they appear -- see
+# split_segments. Announcer._announce renders and plays each in sequence,
+# so a message can interleave sounds and speech instead of at most one
+# leading sound followed by one block of text.
+Segment = Union[Effect, Speech]
 
 
 def preview(text: str, limit: int = 80) -> str:
@@ -95,6 +132,21 @@ def _clean_repeat_count(value: object) -> int:
     if count < 1:
         return 1
     return min(count, MAX_REPEAT_COUNT)
+
+
+def _clean_effect_count(value: str) -> int:
+    """Validates the "*N" suffix of one effect tag: how many times to play
+    that one sound back to back. Same fallback shape as
+    _clean_repeat_count -- _EFFECT_REPEAT_RE only ever hands this digits, so
+    the ValueError branch is unreachable in practice, but kept for the same
+    defend-in-depth reason as the other _clean_* helpers."""
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return 1
+    if count < 1:
+        return 1
+    return min(count, MAX_EFFECT_REPEAT)
 
 
 def clean_scale(value: object, bounds: Tuple[float, float]) -> Optional[float]:
@@ -186,21 +238,81 @@ def parse(body: str, tags: Optional[Iterable[str]] = None) -> Envelope:
     )
 
 
-def split_effect(content: str) -> Tuple[Optional[str], str]:
-    """Splits a leading "<filename> rest of text" tag off message content.
+def _parse_effect_tag(raw: str) -> Optional[Tuple[str, int]]:
+    """Parses one "<...>" tag body into (name, count), or None if it isn't a
+    syntactically valid effect reference -- name is empty, contains a path
+    separator, or is a bare "." or "..". That guards against path traversal
+    reaching into the assets directory later, since this content comes
+    straight from the network. A tag that fails this check is left as
+    literal text by split_segments rather than dropped, exactly as an
+    ordinary word would be.
 
-    Returns (filename, remaining_text). filename is None (and the original
-    content returned untouched) unless the content starts with a bare
-    "<name>" tag naming a plain filename -- no path separators, no "..".
-    That guards against path traversal reaching into the assets directory
-    later, since this content comes straight from the network.
+    `raw` may end in "*N" (e.g. "footstep*6") to request the same sound N
+    times back to back -- see MAX_EFFECT_REPEAT.
     """
-    match = _EFFECT_TAG_RE.match(content)
-    if not match:
-        return None, content
+    raw = raw.strip()
+    count = 1
+    repeat_match = _EFFECT_REPEAT_RE.match(raw)
+    if repeat_match:
+        raw, count = repeat_match.group(1).strip(), _clean_effect_count(repeat_match.group(2))
 
-    name, rest = match.group(1).strip(), match.group(2)
+    name = raw
     if not name or "/" in name or "\\" in name or name in (".", ".."):
-        return None, content
+        return None
+    return name, count
 
-    return name, rest
+
+def split_segments(content: str) -> List[Segment]:
+    """Splits message content into an ordered list of Speech and Effect
+    segments, so a sound can be interleaved anywhere in the text rather than
+    only as a single leading tag. Announcer._announce plays the result back
+    in order.
+
+    A "<...>" tag that isn't a syntactically valid effect reference (see
+    _parse_effect_tag) is left in place as part of the surrounding literal
+    text -- same never-fail-the-message stance as the rest of this module.
+    An effect *name* that doesn't resolve to a real file is a separate,
+    Announcer-side concern (see Announcer._resolve_effect): it's still a
+    valid tag here, just skipped at playback time.
+
+    The total effect count (tags' "*N" summed) is capped at MAX_EFFECTS --
+    bounds how much decoded PCM a single message can hold in memory at once
+    -- with the surplus dropped and a warning logged rather than failing
+    the message.
+    """
+    segments: List[Segment] = []
+    text_start = 0
+    effect_total = 0
+
+    for match in _SEGMENT_TAG_RE.finditer(content):
+        parsed = _parse_effect_tag(match.group(1))
+        if parsed is None:
+            continue  # left as literal text; keeps accumulating below
+
+        name, count = parsed
+        text = content[text_start:match.start()].strip()
+        if text:
+            segments.append(Speech(text))
+        text_start = match.end()
+
+        if effect_total >= MAX_EFFECTS:
+            logger.warning(
+                "Dropping effect %r: MAX_EFFECTS (%d) already reached", name, MAX_EFFECTS
+            )
+            continue
+        if effect_total + count > MAX_EFFECTS:
+            logger.warning(
+                "Effect %r repeat count %d exceeds the remaining budget, using %d",
+                name,
+                count,
+                MAX_EFFECTS - effect_total,
+            )
+            count = MAX_EFFECTS - effect_total
+        effect_total += count
+        segments.append(Effect(name=name, count=count))
+
+    trailing = content[text_start:].strip()
+    if trailing:
+        segments.append(Speech(trailing))
+
+    return segments
