@@ -399,14 +399,40 @@ def test_repeat_count_with_effect_tag_replays_the_whole_sequence(tmp_path):
     # re-decoded per repeat.
     assert effects.played == [tmp_path / "boom.mp3"]
     assert effects.play_pcm_calls == [b"pcm:boom.mp3", b"pcm:boom.mp3"]
-    # Likewise the spoken body and the "Powtarzam!" separator are each
-    # synthesized once and reused.
-    assert tts.said == ["Testy padły.", "Powtarzam!"]
+    # Likewise the spoken body and the separator are each synthesized once
+    # and reused -- and the separator is the bare REPEAT_SEPARATOR constant,
+    # not a stripped/repunctuated variant, so it lands on the same CachedTts
+    # entry _synthesize_plain's separator does (see Announcer._render_separator).
+    assert tts.said == ["Testy padły.", REPEAT_SEPARATOR]
     assert tts.played == [
         "Testy padły.".encode("utf-8"),
-        "Powtarzam!".encode("utf-8"),
+        REPEAT_SEPARATOR.encode("utf-8"),
         "Testy padły.".encode("utf-8"),
     ]
+
+
+def test_effect_message_repeat_separator_reuses_a_plain_messages_cache_entry(tmp_path):
+    # The whole point of sharing one CachedTts entry for the separator is
+    # that it's paid for once per voice, not once per message shape. A plain
+    # repeated message warms the cache; a later interleaved one must hit it,
+    # not mint its own differently-spelled entry.
+    (tmp_path / "boom.mp3").write_bytes(b"fake mp3")
+    inner = ConcatenatingFakeTts()
+    cached = CachedTts(inner, str(tmp_path / "cache"), ttl_s=3600, max_bytes=10_000_000)
+    announcer = make_announcer(tmp_path, tts=cached, effects=FakeEffects())
+    announcer.start()
+
+    announcer.submit(Msg(content="plain", repeat_count=2))
+    drain(announcer)
+    assert REPEAT_SEPARATOR in inner.said
+
+    inner.said.clear()
+    announcer.submit(Msg(content="<boom.mp3> z dzwiekiem", repeat_count=2))
+    drain(announcer)
+
+    # The body is new (cache miss, one synthesize call), but the separator
+    # is already cached from the plain message above -- zero more calls for it.
+    assert inner.said == ["z dzwiekiem."]
 
 
 def test_effect_path_traversal_is_rejected(tmp_path):
@@ -608,11 +634,13 @@ def test_multiple_effects_interleaved_with_speech_play_in_order(tmp_path):
     assert play_events == ["effects.play", "tts.play", "effects.play", "tts.play"]
 
 
-def test_adjacent_effect_tags_are_decoded_separately_but_played_as_one_clip(tmp_path):
+def test_adjacent_same_name_effect_tags_are_decoded_once_and_played_as_one_clip(tmp_path):
     # The issue's case: a run of the same sound, played back to back with no
     # gap -- see krzykacz.effects.Effects.decode's docstring on why merging
     # at the PCM level (one play_pcm call) is both cheaper and gapless
-    # compared to one play() call per hit.
+    # compared to one play() call per hit. Writing the tag out three times
+    # rather than using "*3" should cost exactly the same: one decode, not
+    # three -- see Announcer._render_effect_run.
     (tmp_path / "step.mp3").write_bytes(b"1")
     tts = FakeTts()
     effects = FakeEffects()
@@ -622,9 +650,38 @@ def test_adjacent_effect_tags_are_decoded_separately_but_played_as_one_clip(tmp_
     announcer.submit(Msg(content="<step.mp3><step.mp3><step.mp3> Ktoś idzie"))
     drain(announcer)
 
-    assert effects.played == [tmp_path / "step.mp3"] * 3
-    assert effects.play_pcm_calls == [b"pcm:step.mp3" * 3]
+    assert effects.played == [tmp_path / "step.mp3"]  # decoded once, not three times
+    assert effects.play_pcm_calls == [b"pcm:step.mp3" * 3]  # played three times over
     assert tts.said == ["Ktoś idzie."]
+
+
+def test_adjacent_different_name_effect_tags_are_each_decoded_once(tmp_path):
+    (tmp_path / "a.mp3").write_bytes(b"1")
+    (tmp_path / "b.mp3").write_bytes(b"2")
+    effects = FakeEffects()
+    announcer = make_announcer(tmp_path, effects=effects)
+    announcer.start()
+
+    announcer.submit(Msg(content="<a.mp3><b.mp3><a.mp3>"))
+    drain(announcer)
+
+    assert effects.played == [tmp_path / "a.mp3", tmp_path / "b.mp3"]  # each name once
+    assert effects.play_pcm_calls == [b"pcm:a.mp3" + b"pcm:b.mp3" + b"pcm:a.mp3"]
+
+
+def test_repeated_unresolvable_effect_in_one_run_is_looked_up_only_once(tmp_path, caplog):
+    effects = FakeEffects()
+    announcer = make_announcer(tmp_path, effects=effects)
+    announcer.start()
+
+    with caplog.at_level("WARNING"):
+        announcer.submit(Msg(content="<brak.mp3><brak.mp3>"))
+        drain(announcer)
+
+    assert effects.played == []  # never reached decode()
+    assert effects.play_pcm_calls == []
+    not_found = [r for r in caplog.records if "not found" in r.getMessage()]
+    assert len(not_found) == 1  # the failed lookup is cached, not retried
 
 
 def test_effect_star_suffix_plays_that_many_copies_as_one_clip(tmp_path):

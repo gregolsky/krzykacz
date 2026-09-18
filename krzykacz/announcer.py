@@ -270,7 +270,7 @@ class Announcer:
         if copies <= 1:
             return pass_items
 
-        separator_item = self._render_speech_run([Speech(REPEAT_SEPARATOR.strip())], voice, prosody)
+        separator_item = self._render_separator(voice, prosody)
 
         result: List[PlaybackItem] = []
         for i in range(copies):
@@ -278,6 +278,22 @@ class Announcer:
                 result.append(separator_item)
             result.extend(pass_items)
         return result
+
+    def _render_separator(self, voice: Optional[str], prosody: Prosody) -> Optional[PlaybackItem]:
+        """Renders the "Powtarzam!" heard between repeats of an interleaved
+        message. Deliberately calls synthesize() with the exact same text
+        _synthesize_plain's concatenable branch uses (the bare
+        REPEAT_SEPARATOR constant, not run through _with_terminal_punctuation
+        or .strip()) so the two paths land on the same CachedTts entry --
+        see _synthesize_plain's docstring on the separator being "cacheable
+        ... across every message in that voice". A text-level mismatch here
+        would silently stop that sharing for any repeated message that also
+        has an effect tag."""
+        try:
+            return ("speech", self._tts.synthesize(REPEAT_SEPARATOR, voice, prosody))
+        except Exception:
+            logger.exception("Failed to synthesize repeat separator")
+            return None
 
     def _render_pass(
         self, segments: List[Segment], voice: Optional[str], prosody: Prosody
@@ -292,7 +308,17 @@ class Announcer:
         -- same distinction _synthesize_plain's repeat path already relies
         on. Speech and effect items never merge with each other: they're
         different audio formats/sample rates, always played with a separate
-        call."""
+        call.
+
+        In practice a "speech run" here is always exactly one segment --
+        split_segments never emits two Speech segments back to back, each
+        maximal stretch of literal text already becomes one -- so
+        _render_speech_run's multi-segment merging is a safety net for an
+        input shape this call site never actually produces, not a case this
+        code relies on. Kept rather than trimmed to a single segment: a
+        future change to split_segments that *did* start emitting adjacent
+        Speech segments would otherwise silently lose whichever ones a
+        narrower signature dropped."""
         items: List[PlaybackItem] = []
         for is_effect, run in groupby(segments, key=lambda s: isinstance(s, Effect)):
             item = self._render_effect_run(list(run)) if is_effect else self._render_speech_run(
@@ -303,23 +329,37 @@ class Announcer:
         return items
 
     def _render_effect_run(self, run: List[Effect]) -> Optional[PlaybackItem]:
+        # Decoded once per distinct name, not once per Effect: "<step><step>"
+        # (repetition written out as separate tags) should cost exactly what
+        # "<step*2>" costs -- one ffmpeg decode reused via `* count` -- not
+        # one decode per occurrence of the same file. A name that fails to
+        # resolve/decode is cached as None too, so a repeated bad tag is
+        # looked up and logged once instead of once per occurrence.
+        decoded: Dict[str, Optional[bytes]] = {}
         clips: List[bytes] = []
         for effect in run:
-            path = self._resolve_effect(effect.name)
-            if path is None:
-                logger.warning(
-                    "Effect %r not found in %s, skipping", effect.name, self._assets_dir
-                )
-                continue
-            try:
-                clip = self._effects.decode(path)
-            except Exception:
-                logger.exception("Failed to decode effect %r", effect.name)
-                continue
-            clips.append(clip * effect.count)
+            if effect.name not in decoded:
+                decoded[effect.name] = self._decode_effect(effect.name)
+            clip = decoded[effect.name]
+            if clip is not None:
+                clips.append(clip * effect.count)
         if not clips:
             return None
         return ("effect", b"".join(clips))
+
+    def _decode_effect(self, name: str) -> Optional[bytes]:
+        """Resolves and decodes one effect by name, or None (logged) if it
+        doesn't resolve to a file or fails to decode -- never raises, same
+        skip-don't-fail stance as the rest of this module."""
+        path = self._resolve_effect(name)
+        if path is None:
+            logger.warning("Effect %r not found in %s, skipping", name, self._assets_dir)
+            return None
+        try:
+            return self._effects.decode(path)
+        except Exception:
+            logger.exception("Failed to decode effect %r", name)
+            return None
 
     def _render_speech_run(
         self, run: List[Speech], voice: Optional[str], prosody: Prosody
