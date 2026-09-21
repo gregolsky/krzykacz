@@ -75,7 +75,13 @@ class Announcer:
     """Single-worker FIFO: consumes envelopes, drives light + effect + TTS in
     sequence. Blink once, light on, interleaved sounds/speech in the order
     they appear in the message, light off. Nothing is ever interrupted -- the
-    next envelope waits in the queue."""
+    next envelope waits in the queue.
+
+    The one exception is mute (`set_muted`): it stops submit accepting
+    anything, discards whatever is still queued as the worker reaches it, and
+    ends the message being played after its current segment. It can't cut a
+    segment short -- the `aplay` for it is a local of `Tts.play` / `Effects.play_pcm`
+    that nothing else can reach -- so a long segment finishes."""
 
     def __init__(
         self,
@@ -93,20 +99,35 @@ class Announcer:
         self._queue: "queue.Queue[Envelope]" = queue.Queue(maxsize=queue_size)
         self._history: "deque[Msg]" = deque(maxlen=history_size)
         self._current: Optional[Envelope] = None
+        self._muted = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self) -> None:
         self._thread.start()
 
     def snapshot(self) -> Dict[str, object]:
-        """Returns what's currently playing (or None if idle) and what's
-        still waiting -- used by GET /v1/queue. queue.Queue has no safe
-        public iteration, hence locking its mutex to read the raw deque."""
+        """Returns what's currently playing (or None if idle), what's
+        still waiting, and whether mute is on -- used by GET /v1/queue.
+        queue.Queue has no safe public iteration, hence locking its mutex to
+        read the raw deque."""
         with self._queue.mutex:
             pending = list(self._queue.queue)
-        return {"playing": self._current, "pending": pending}
+        return {"playing": self._current, "pending": pending, "muted": self._muted.is_set()}
+
+    def set_muted(self, muted: bool) -> None:
+        if muted:
+            self._muted.set()
+        else:
+            self._muted.clear()
+        logger.info("Muted" if muted else "Unmuted")
+
+    def is_muted(self) -> bool:
+        return self._muted.is_set()
 
     def submit(self, envelope: Envelope) -> bool:
+        if self._muted.is_set():
+            logger.info("Muted, dropping: %r", envelope)
+            return False
         try:
             self._queue.put_nowait(envelope)
         except queue.Full:
@@ -130,6 +151,12 @@ class Announcer:
                 self._queue.task_done()
 
     def _handle(self, envelope: Envelope) -> None:
+        # Discarded here rather than pulled out of the queue when mute is
+        # switched on: the worker still task_done()s it, so queue.join()
+        # accounting stays balanced with no queue-internals surgery.
+        if self._muted.is_set():
+            logger.info("Muted, discarding queued: %r", envelope)
+            return
         if isinstance(envelope, Msg):
             self._history.append(envelope)
             logger.info("New message: %s", preview(envelope.content))
@@ -166,6 +193,11 @@ class Announcer:
         else:
             items = self._render_plain(segments, msg.repeat_count, voice, prosody)
 
+        # Rendering can take seconds; mute may have arrived meanwhile.
+        if self._muted.is_set():
+            logger.info("Muted while rendering, not playing")
+            return
+
         try:
             self._light.blink(1)
             self._light.on()
@@ -174,6 +206,9 @@ class Announcer:
 
         try:
             for kind, data in items:
+                if self._muted.is_set():
+                    logger.info("Muted, stopping playback")
+                    break
                 if kind == "effect":
                     logger.info("Playing effect")
                     self._effects.play_pcm(data)

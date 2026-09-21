@@ -1,6 +1,6 @@
 from conftest import make_config
 
-from krzykacz.config import Config, _parse_voices
+from krzykacz.config import DEFAULT_ESPEAK_VOICES, Config, _parse_espeak_voices, _parse_voices
 from krzykacz.tts import Prosody, VoiceSpec
 
 
@@ -105,3 +105,28 @@ def test_piper_voices_merges_default_and_extra_as_voicespecs():
         "darkman": VoiceSpec("/models/darkman.onnx", None),
         "staszczyk": VoiceSpec("/multi.onnx", 0),
     }
+
+
+def test_espeak_voices_default_to_the_builtin_set_when_unset():
+    assert _parse_espeak_voices(None) == DEFAULT_ESPEAK_VOICES
+
+
+def test_espeak_voices_builtin_set_has_male_and_female_options():
+    assert len(DEFAULT_ESPEAK_VOICES) == 10
+    assert DEFAULT_ESPEAK_VOICES["espeak_male"] == "pl+m3"
+    assert DEFAULT_ESPEAK_VOICES["espeak_female"] == "pl+f3"
+
+
+def test_espeak_voices_explicitly_empty_turns_them_off():
+    assert _parse_espeak_voices("") == {}
+
+
+def test_espeak_voices_parse_name_to_spec_and_skip_malformed():
+    assert _parse_espeak_voices(" a = pl+m1 ,bad, b=pl+f2,c=") == {"a": "pl+m1", "b": "pl+f2"}
+
+
+def test_from_env_reads_espeak_voices(monkeypatch):
+    monkeypatch.setenv("KRZYKACZ_TOPIC", "t")
+    monkeypatch.setenv("KRZYKACZ_ESPEAK_VOICES", "x=pl+m1")
+
+    assert Config.from_env().espeak_voices == {"x": "pl+m1"}

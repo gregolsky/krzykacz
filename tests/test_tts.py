@@ -1,3 +1,5 @@
+import struct
+
 import pytest
 
 from krzykacz.tts import (
@@ -5,8 +7,10 @@ from krzykacz.tts import (
     EspeakTts,
     PiperTts,
     Prosody,
+    RoutedTts,
     Tts,
     VoiceSpec,
+    _wav_to_pcm,
 )
 
 
@@ -164,24 +168,207 @@ def test_instance_prosody_is_part_of_the_fingerprint():
     assert plain.fingerprint() != fast.fingerprint()
 
 
-def test_espeak_maps_speed_to_words_per_minute(monkeypatch):
-    captured = _capture_cmd(monkeypatch)
+def _wav(pcm, declared=0x7FFFF000):
+    """A WAV the way `espeak-ng --stdout` writes one: the data-chunk length is
+    a placeholder that doesn't match what follows."""
+    fmt = struct.pack("<HHIIHH", 1, 1, 22050, 44100, 2, 16)
+    return (
+        b"RIFF" + struct.pack("<I", 0x7FFFF000) + b"WAVE"
+        + b"fmt " + struct.pack("<I", len(fmt)) + fmt
+        + b"data" + struct.pack("<I", declared) + pcm
+    )
+
+
+def test_wav_to_pcm_strips_header_and_ignores_bogus_declared_length():
+    assert _wav_to_pcm(_wav(b"\x01\x02\x03\x04")) == b"\x01\x02\x03\x04"
+
+
+def test_wav_to_pcm_skips_unknown_chunks_before_data():
+    fmt = struct.pack("<HHIIHH", 1, 1, 22050, 44100, 2, 16)
+    audio = (
+        b"RIFF" + struct.pack("<I", 0) + b"WAVE"
+        + b"fmt " + struct.pack("<I", len(fmt)) + fmt
+        + b"LIST" + struct.pack("<I", 3) + b"abc" + b"\x00"  # odd size, pad byte
+        + b"data" + struct.pack("<I", 2) + b"\x09\x09"
+    )
+
+    assert _wav_to_pcm(audio) == b"\x09\x09"
+
+
+@pytest.mark.parametrize("junk", [b"", b"not a wav", b"RIFF\x00\x00\x00\x00WAVE"])
+def test_wav_to_pcm_yields_nothing_for_anything_but_a_wave_stream(junk):
+    assert _wav_to_pcm(junk) == b""
+
+
+def _capture_run(monkeypatch, stdout=b""):
+    captured = []
+
+    class FakeResult:
+        pass
+
+    FakeResult.stdout = stdout
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return FakeResult()
+
+    monkeypatch.setattr("krzykacz.tts.subprocess.run", fake_run)
+    return captured
+
+
+def test_espeak_returns_headerless_pcm_and_is_concatenable(monkeypatch):
+    _capture_run(monkeypatch, stdout=_wav(b"\xaa\xbb"))
     tts = EspeakTts(voice="pl")
 
-    tts.synthesize("hej", prosody=Prosody(speed=2.0, variation=0.2))
-
-    cmd = captured[0]
-    assert cmd[cmd.index("-s") + 1] == str(EspeakTts.BASE_WORDS_PER_MINUTE * 2)
-    # variation/rhythm have no espeak-ng equivalent and are ignored.
-    assert "--noise_scale" not in cmd
+    assert tts.synthesize("hej") == b"\xaa\xbb"
+    assert tts.concatenable is True
 
 
-def test_espeak_without_speed_passes_no_rate_flag(monkeypatch):
-    captured = _capture_cmd(monkeypatch)
+def test_espeak_sends_text_on_stdin_not_argv(monkeypatch):
+    captured = _capture_run(monkeypatch)
+
+    EspeakTts(voice="pl").synthesize("-h ąę")
+
+    cmd, kwargs = captured[0]
+    assert cmd == ["espeak-ng", "-v", "pl", "--stdout"]
+    assert kwargs["input"] == "-h ąę".encode("utf-8")
+
+
+def test_espeak_maps_speed_to_words_per_minute(monkeypatch):
+    captured = _capture_run(monkeypatch)
+
+    EspeakTts(voice="pl").synthesize("hej", prosody=Prosody(speed=2.0))
+
+    assert captured[0][0] == ["espeak-ng", "-v", "pl", "-s", "350", "--stdout"]
+
+
+def test_espeak_maps_variation_to_pitch_anchored_on_piper_default(monkeypatch):
+    captured = _capture_run(monkeypatch)
+    tts = EspeakTts(voice="pl")
+
+    tts.synthesize("a", prosody=Prosody(variation=0.667))  # Piper default
+    tts.synthesize("a", prosody=Prosody(variation=0.0))
+    tts.synthesize("a", prosody=Prosody(variation=1.5))
+
+    pitches = [c[0][c[0].index("-p") + 1] for c in captured]
+    assert pitches == ["50", "0", "99"]  # default -> espeak default; top clamps
+
+
+def test_espeak_maps_rhythm_to_word_gap_and_floors_at_zero(monkeypatch):
+    captured = _capture_run(monkeypatch)
+    tts = EspeakTts(voice="pl")
+
+    tts.synthesize("a", prosody=Prosody(rhythm=1.4))
+    tts.synthesize("a", prosody=Prosody(rhythm=0.2))  # below Piper's default
+
+    gaps = [c[0][c[0].index("-g") + 1] for c in captured]
+    assert gaps == ["6", "0"]
+
+
+def test_espeak_unset_knobs_pass_no_prosody_flags(monkeypatch):
+    captured = _capture_run(monkeypatch)
 
     EspeakTts(voice="pl").synthesize("hej")
 
-    assert "-s" not in captured[0]
+    cmd = captured[0][0]
+    assert not {"-s", "-p", "-g"} & set(cmd)
+
+
+def test_espeak_instance_prosody_is_overridden_per_message(monkeypatch):
+    captured = _capture_run(monkeypatch)
+    tts = EspeakTts(voice="pl", prosody=Prosody(speed=2.0, variation=0.667))
+
+    tts.synthesize("a", prosody=Prosody(speed=1.0))
+
+    cmd = captured[0][0]
+    assert cmd[cmd.index("-s") + 1] == "175"  # message wins
+    assert cmd[cmd.index("-p") + 1] == "50"  # instance default still applies
+
+
+def test_espeak_alias_resolves_to_its_spec_and_unknown_names_pass_through(monkeypatch):
+    captured = _capture_run(monkeypatch)
+    tts = EspeakTts(voice="pl", voices={"espeak_male": "pl+m3"})
+
+    tts.synthesize("a", voice="espeak_male")
+    tts.synthesize("a", voice="en")
+    tts.synthesize("a")
+
+    assert [c[0][2] for c in captured] == ["pl+m3", "en", "pl"]
+
+
+def test_espeak_fingerprint_covers_voice_prosody_and_rate():
+    male = EspeakTts(voices={"m": "pl+m3", "f": "pl+f3"})
+    assert male.fingerprint("m") != male.fingerprint("f")
+    assert male.fingerprint("m") == male.fingerprint("pl+m3")  # identity is the spec
+    for knob in ({"speed": 1.5}, {"variation": 0.2}, {"rhythm": 1.2}):
+        tuned = EspeakTts(voices={"m": "pl+m3"}, prosody=Prosody(**knob))
+        assert tuned.fingerprint("m") != male.fingerprint("m")
+
+
+def _routed(monkeypatch, piper_voices=None, espeak_voices=None):
+    captured = _capture_run(monkeypatch, stdout=_wav(b"ES"))
+    piper = PiperTts(voices=piper_voices or {"darkman": "/d.onnx"}, default_voice="darkman")
+    espeak = EspeakTts(voices=espeak_voices or {"espeak_male": "pl+m3"})
+    return RoutedTts(piper, espeak), captured
+
+
+def test_routed_sends_each_voice_to_its_engine(monkeypatch):
+    tts, captured = _routed(monkeypatch)
+
+    tts.synthesize("a", voice="espeak_male")
+    tts.synthesize("a", voice="darkman")
+    tts.synthesize("a", voice="no-such-voice")
+    tts.synthesize("a")
+
+    assert [c[0][0] for c in captured] == ["espeak-ng", "piper", "piper", "piper"]
+
+
+def test_routed_fingerprint_follows_the_engine(monkeypatch):
+    tts, _ = _routed(monkeypatch)
+
+    assert tts.fingerprint("espeak_male").startswith("espeak:")
+    assert tts.fingerprint("darkman").startswith("piper:")
+
+
+def test_routed_is_concatenable(monkeypatch):
+    tts, _ = _routed(monkeypatch)
+
+    assert tts.concatenable is True
+
+
+def test_routed_piper_wins_a_name_collision(monkeypatch):
+    tts, captured = _routed(
+        monkeypatch, piper_voices={"darkman": "/d.onnx"}, espeak_voices={"darkman": "pl+m3"}
+    )
+
+    tts.synthesize("a", voice="darkman")
+
+    assert captured[0][0][0] == "piper"
+
+
+def test_routed_refuses_engines_that_disagree_on_sample_rate():
+    piper = PiperTts(voices={"d": "/d.onnx"}, default_voice="d", sample_rate=16000)
+
+    with pytest.raises(ValueError):
+        RoutedTts(piper, EspeakTts())
+
+
+def test_routed_play_uses_the_shared_raw_format(monkeypatch):
+    popen_cmds = []
+
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            popen_cmds.append(cmd)
+
+    monkeypatch.setattr("krzykacz.tts.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("krzykacz.tts.communicate_or_kill", lambda *a, **k: None)
+    tts, _ = _routed(monkeypatch)
+
+    tts.play(b"\x00\x00")
+
+    assert popen_cmds[0][:1] == ["aplay"]
+    assert popen_cmds[0][popen_cmds[0].index("-t") + 1] == "raw"
+    assert popen_cmds[0][popen_cmds[0].index("-r") + 1] == "22050"
 
 
 def test_synthesize_timeout_scales_with_text_length(monkeypatch):

@@ -430,3 +430,76 @@ def test_random_sound_and_random_curse_share_the_rate_limit_budget_with_send_mes
 
     assert announcer.submitted == [Msg(content="hello")]
     assert "rate limited" in blocked.structured_content["result"]
+
+
+def _mcp_with_control(announcer, limiter=None):
+    return _build_mcp_server(
+        announcer.submit,
+        make_describers(),
+        make_pickers(),
+        limiter or IpRateLimiter(0),
+        announcer.control,
+    )
+
+
+def test_mute_tools_are_registered_only_with_a_control():
+    pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
+
+    with_control = {t.name for t in asyncio.run(_mcp_with_control(FakeAnnouncer()).list_tools())}
+
+    assert {"set_mute", "queue_status"} <= with_control
+
+
+def test_set_mute_tool_toggles_the_announcer():
+    pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
+    announcer = FakeAnnouncer()
+    mcp = _mcp_with_control(announcer)
+
+    muted = asyncio.run(mcp.call_tool("set_mute", {"muted": True}))
+    assert announcer.muted is True
+    assert "muted" in muted.content[0].text
+
+    asyncio.run(mcp.call_tool("set_mute", {"muted": False}))
+    assert announcer.muted is False
+
+
+def test_queue_status_tool_reports_the_queue_and_mute_state():
+    pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
+    announcer = FakeAnnouncer()
+    announcer.muted = True
+    announcer.submitted.append(Msg(content="czeka"))
+    mcp = _mcp_with_control(announcer)
+
+    result = asyncio.run(mcp.call_tool("queue_status", {}))
+
+    assert result.structured_content["result"] == {
+        "playing": None,
+        "pending": [{"content": "czeka", "voice": None, "repeat": 1}],
+        "muted": True,
+    }
+
+
+def test_send_message_dropped_because_muted_says_so():
+    pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
+    announcer = FakeAnnouncer(accept=False)
+    announcer.muted = True
+    mcp = _mcp_with_control(announcer)
+
+    result = asyncio.run(mcp.call_tool("send_message", {"content": "hello"}))
+
+    assert result.content[0].text == "dropped (muted)"
+
+
+def test_set_mute_tool_is_not_rate_limited():
+    pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
+    announcer = FakeAnnouncer()
+    mcp = _mcp_with_control(announcer, limiter=IpRateLimiter(60))
+
+    reset_token = _client_ip.set("9.9.9.9")
+    try:
+        asyncio.run(mcp.call_tool("send_message", {"content": "spends the budget"}))
+        asyncio.run(mcp.call_tool("set_mute", {"muted": True}))
+    finally:
+        _client_ip.reset(reset_token)
+
+    assert announcer.muted is True

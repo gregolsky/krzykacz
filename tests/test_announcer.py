@@ -608,7 +608,7 @@ def test_snapshot_is_idle_after_draining(tmp_path):
     announcer.submit(Msg(content="one"))
     drain(announcer)
 
-    assert announcer.snapshot() == {"playing": None, "pending": []}
+    assert announcer.snapshot() == {"playing": None, "pending": [], "muted": False}
 
 
 # --- Interleaved sounds/speech (issue #1: multiple sounds in one message) ---
@@ -754,3 +754,98 @@ def test_effects_only_message_speaks_nothing(tmp_path):
 
     assert tts.said == []
     assert effects.play_pcm_calls == [b"pcm:boom.mp3"]
+
+
+def test_muted_announcer_refuses_new_submissions(tmp_path):
+    tts = FakeTts()
+    announcer = make_announcer(tmp_path, tts=tts)
+    announcer.start()
+    announcer.set_muted(True)
+
+    assert announcer.submit(Msg(content="hello")) is False
+    assert announcer.snapshot()["muted"] is True
+    assert announcer.snapshot()["pending"] == []
+    assert tts.said == []
+
+
+def test_unmuting_restores_service(tmp_path):
+    tts = FakeTts()
+    announcer = make_announcer(tmp_path, tts=tts)
+    announcer.start()
+    announcer.set_muted(True)
+    announcer.set_muted(False)
+
+    assert announcer.submit(Msg(content="hello")) is True
+    drain(announcer)
+
+    assert tts.said == ["hello."]
+    assert announcer.snapshot()["muted"] is False
+
+
+def test_mute_discards_what_was_already_queued_without_hanging_drain(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingLight(FakeLight):
+        def on(self):
+            super().on()
+            started.set()
+            release.wait(timeout=5)
+
+    tts = FakeTts()
+    announcer = make_announcer(tmp_path, light=BlockingLight(), tts=tts)
+    announcer.start()
+    announcer.submit(Msg(content="playing"))
+    assert started.wait(timeout=2)
+    announcer.submit(Msg(content="queued-1"))
+    announcer.submit(Msg(content="queued-2"))
+
+    announcer.set_muted(True)
+    release.set()
+    drain(announcer, timeout=5)  # would time out if task_done() were skipped
+
+    assert tts.said == ["playing."]  # already rendered when mute arrived; the queued two never were
+    assert tts.played == []  # ...and it was cut before its first segment
+    assert announcer.snapshot()["pending"] == []
+
+
+def test_mute_ends_a_message_after_its_current_segment_and_still_turns_the_light_off(tmp_path):
+    (tmp_path / "step").write_bytes(b"fake")
+    light = FakeLight()
+    muted_after_first = threading.Event()
+
+    class MutingEffects(FakeEffects):
+        def play_pcm(self, data):
+            super().play_pcm(data)
+            announcer.set_muted(True)  # arrives while the first segment plays
+            muted_after_first.set()
+
+    effects = MutingEffects()
+    tts = FakeTts()
+    announcer = make_announcer(tmp_path, light=light, tts=tts, effects=effects)
+    announcer.start()
+    announcer.submit(Msg(content="<step> and then some speech"))
+    assert muted_after_first.wait(timeout=2)
+    drain(announcer)
+
+    assert len(effects.play_pcm_calls) == 1  # the segment in flight finished
+    assert tts.played == []  # the next one never started
+    assert light.calls[-1] == "off"
+
+
+def test_mute_arriving_during_rendering_plays_nothing_and_leaves_the_light_alone(tmp_path):
+    light = FakeLight()
+
+    class MutingTts(FakeTts):
+        def synthesize(self, text, voice=None, prosody=Prosody()):
+            announcer.set_muted(True)
+            return super().synthesize(text, voice, prosody)
+
+    tts = MutingTts()
+    announcer = make_announcer(tmp_path, light=light, tts=tts)
+    announcer.start()
+    announcer._queue.put(Msg(content="hello"))  # bypass submit(), which would refuse
+    drain(announcer)
+
+    assert tts.played == []
+    assert light.calls == []

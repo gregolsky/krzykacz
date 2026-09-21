@@ -4,17 +4,18 @@ import functools
 import logging
 import random
 import threading
+from typing import List, Tuple
 
 from .announcer import Announcer
 from .config import Config
 from .effects import Effects, FfmpegEffects, NullEffects
 from .http_server import build_http_server
 from .light import Light, NullLight, UhubctlLight
-from .metadata import Describers, describe_effects, describe_limits, describe_voices
+from .metadata import Control, Describers, describe_effects, describe_limits, describe_voices
 from .ntfy import listen
 from .random_picks import INTENSITIES, STYLES, Pickers, random_curse_msg, random_sound_msg
 from .ratelimit import IpRateLimiter
-from .tts import CachedTts, EspeakTts, PiperTts, Tts
+from .tts import CachedTts, EspeakTts, PiperTts, RoutedTts, Tts
 
 logger = logging.getLogger(__name__)
 
@@ -42,18 +43,35 @@ def build_light(cfg: Config) -> Light:
 
 
 def build_tts(cfg: Config) -> Tts:
+    def espeak() -> EspeakTts:
+        return EspeakTts(
+            cfg.espeak_voice, cfg.alsa_device, prosody=cfg.prosody, voices=cfg.espeak_voices
+        )
+
     if cfg.tts_backend == "piper":
         tts: Tts = PiperTts(
             cfg.piper_voices, cfg.piper_default_voice, cfg.alsa_device, prosody=cfg.prosody
         )
+        if cfg.espeak_voices:
+            tts = RoutedTts(tts, espeak())
     elif cfg.tts_backend == "espeak":
-        tts = EspeakTts(cfg.espeak_voice, cfg.alsa_device, prosody=cfg.prosody)
+        tts = espeak()
     else:
         raise ValueError(f"Unknown KRZYKACZ_TTS backend: {cfg.tts_backend!r}")
 
     if cfg.cache_ttl <= 0:
         return tts
     return CachedTts(tts, cfg.cache_dir, cfg.cache_ttl, cfg.cache_max_mb * 1024 * 1024)
+
+
+def voice_names(cfg: Config) -> Tuple[List[str], str]:
+    """Every name a caller can pass as `voice`, and which one is the default.
+    The primary engine's names come first; the espeak-ng aliases follow."""
+    if cfg.tts_backend == "piper":
+        primary, default = list(cfg.piper_voices), cfg.piper_default_voice
+    else:
+        primary, default = [cfg.espeak_voice], cfg.espeak_voice
+    return list(dict.fromkeys([*primary, *cfg.espeak_voices])), default
 
 
 def build_effects(cfg: Config) -> Effects:
@@ -85,8 +103,7 @@ def main() -> None:
     )
     announcer.start()
 
-    voices_info = list(cfg.piper_voices) if cfg.tts_backend == "piper" else [cfg.espeak_voice]
-    default_voice = cfg.piper_default_voice if cfg.tts_backend == "piper" else cfg.espeak_voice
+    voices_info, default_voice = voice_names(cfg)
     voices = functools.partial(describe_voices, cfg.tts_backend, voices_info, default_voice)
     effects = functools.partial(describe_effects, cfg.assets_dir)
     limits = functools.partial(
@@ -98,6 +115,11 @@ def main() -> None:
         STYLES,
     )
     describers = Describers(voices=voices, effects=effects, limits=limits)
+    control = Control(
+        snapshot=announcer.snapshot,
+        set_muted=announcer.set_muted,
+        is_muted=announcer.is_muted,
+    )
 
     rng = random.Random()
     pickers = Pickers(
@@ -119,7 +141,7 @@ def main() -> None:
             announcer.submit,
             describers,
             pickers,
-            announcer.snapshot,
+            control,
             rate_limiter,
         )
         _start_thread("http-server", http_server.serve_forever)
@@ -138,6 +160,7 @@ def main() -> None:
             describers,
             pickers,
             rate_limiter,
+            control,
         )
         logger.info("Starting MCP endpoint on %s:%d", cfg.mcp_host, cfg.mcp_port)
 

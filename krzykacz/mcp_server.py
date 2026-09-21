@@ -6,7 +6,7 @@ from typing import Dict, Optional
 from .announcer import Submit
 from .audit import log_call
 from .auth import check_bearer_token
-from .metadata import Describers
+from .metadata import Control, Describers, describe_queue
 from .protocol import build_msg, build_repeat
 from .random_picks import INTENSITIES, STYLES, Pickers
 from .ratelimit import IpRateLimiter, rate_limit_or_log
@@ -108,6 +108,22 @@ _PLAY_RECENT_MESSAGE_DESCRIPTION = (
     "notice if this caller's IP called too recently."
 )
 
+_SET_MUTE_DESCRIPTION = (
+    "Silence krzykacz (`muted` true) or let it speak again (`muted` false). "
+    "While muted it accepts nothing new -- send_message and the other "
+    'triggering tools return "dropped (muted)" -- and whatever was still '
+    "queued is discarded. The message being played stops after its current "
+    "sound or sentence rather than mid-word. Use it when the speaker needs "
+    "to be quiet now; remember to unmute afterwards. Idempotent and not "
+    "rate-limited, so it is always available as an emergency stop."
+)
+
+_QUEUE_STATUS_DESCRIPTION = (
+    "Report what krzykacz is playing right now, what is queued behind it, "
+    "and whether it is muted. Read-only and not rate-limited -- call it to "
+    "check why a message was dropped or whether the speaker is busy."
+)
+
 _LIST_VOICES_DESCRIPTION = (
     "List the voice names this instance accepts as send_message's "
     "`voice`, plus which one it defaults to and which TTS backend is "
@@ -159,8 +175,10 @@ def _caller_ip() -> str:
     return _client_ip.get() or "unknown"
 
 
-def _queue_reply(queued: bool) -> str:
-    return "queued" if queued else "dropped (queue full)"
+def _queue_reply(queued: bool, muted: bool = False) -> str:
+    if queued:
+        return "queued"
+    return "dropped (muted)" if muted else "dropped (queue full)"
 
 
 def _voice_names(voices: Dict[str, object]) -> str:
@@ -210,7 +228,9 @@ def _instructions(voices: Dict[str, object]) -> str:
         "across all four of the triggering tools (send_message, "
         "play_recent_message, random_sound, random_curse) -- a rate-limit "
         "result from any of them is expected under bursty use, wait a "
-        "moment and retry rather than looping on it."
+        "moment and retry rather than looping on it. set_mute silences the "
+        "speaker (and is never rate-limited); queue_status shows what is "
+        "playing and whether it is muted."
     )
     return (
         f"{base} TTS backend: {voices.get('tts')}. Available voices: "
@@ -220,7 +240,11 @@ def _instructions(voices: Dict[str, object]) -> str:
 
 
 def _build_mcp_server(
-    submit: Submit, describers: Describers, pickers: Pickers, rate_limiter: IpRateLimiter
+    submit: Submit,
+    describers: Describers,
+    pickers: Pickers,
+    rate_limiter: IpRateLimiter,
+    control: Optional[Control] = None,
 ):
     """Builds the MCPServer with its tools registered, but not yet bound to
     a host/port or wrapped for auth/IP capture. Split out from
@@ -233,6 +257,10 @@ def _build_mcp_server(
     voices = describers.voices()
 
     mcp = MCPServer("krzykacz", instructions=_instructions(voices))
+
+    def is_muted() -> bool:
+        """Whether a refused submit was down to mute, for a truthful reply."""
+        return control is not None and control.is_muted()
 
     @mcp.tool(title="Send message", description=_send_message_description(voices))
     def send_message(
@@ -257,7 +285,7 @@ def _build_mcp_server(
             rhythm=rhythm,
             status="queued" if queued else "dropped",
         )
-        return _queue_reply(queued)
+        return _queue_reply(queued, not queued and is_muted())
 
     @mcp.tool(
         name="play_recent_message",
@@ -270,7 +298,7 @@ def _build_mcp_server(
             return _RATE_LIMITED_REPLY
         queued = _submit_repeat(submit, number)
         log_call("mcp.play_recent_message", ip, number=number, status="queued" if queued else "dropped")
-        return _queue_reply(queued)
+        return _queue_reply(queued, not queued and is_muted())
 
     # Read-only views: audited like everything else, but not rate-limited --
     # they touch neither the light nor the speaker, matching the unlimited
@@ -296,7 +324,7 @@ def _build_mcp_server(
             return "nothing to play: no curated sounds available"
         queued = submit(msg)
         log_call("mcp.random_sound", ip, content=msg.content, status="queued" if queued else "dropped")
-        return f"{_queue_reply(queued)}: {msg.content}"
+        return f"{_queue_reply(queued, not queued and is_muted())}: {msg.content}"
 
     @mcp.tool(title="Play random curse", description=_RANDOM_CURSE_DESCRIPTION)
     def random_curse(intensity: Optional[str] = None, style: Optional[str] = None) -> str:
@@ -320,7 +348,22 @@ def _build_mcp_server(
             speed=msg.speed,
             status="queued" if queued else "dropped",
         )
-        return f"{_queue_reply(queued)}: {msg.content}"
+        return f"{_queue_reply(queued, not queued and is_muted())}: {msg.content}"
+
+    if control is not None:
+        # Registered only when there's an announcer to control. Neither is
+        # rate-limited: set_mute is the emergency stop, and queue_status is a
+        # read, like list_voices.
+        @mcp.tool(title="Set mute", description=_SET_MUTE_DESCRIPTION)
+        def set_mute(muted: bool) -> str:
+            control.set_muted(muted)
+            log_call("mcp.set_mute", _caller_ip(), muted=muted)
+            return "muted" if muted else "unmuted"
+
+        @mcp.tool(title="Queue status", description=_QUEUE_STATUS_DESCRIPTION)
+        def queue_status() -> Dict[str, object]:
+            log_call("mcp.queue_status", _caller_ip())
+            return describe_queue(control.snapshot)
 
     return mcp
 
@@ -332,6 +375,7 @@ def build_mcp_app(
     describers: Describers,
     pickers: Pickers,
     rate_limiter: Optional[IpRateLimiter] = None,
+    control: Optional[Control] = None,
 ):
     """Builds the Streamable HTTP ASGI app exposing the krzykacz MCP tools.
 
@@ -347,7 +391,7 @@ def build_mcp_app(
         ) from exc
 
     limiter = rate_limiter if rate_limiter is not None else IpRateLimiter.disabled()
-    mcp = _build_mcp_server(submit, describers, pickers, limiter)
+    mcp = _build_mcp_server(submit, describers, pickers, limiter, control)
     app = _wrap_auth(mcp.streamable_http_app(host=host), auth_token)
     return _wrap_client_ip(app)
 
@@ -360,12 +404,13 @@ def run_mcp_server(
     describers: Describers,
     pickers: Pickers,
     rate_limiter: Optional[IpRateLimiter] = None,
+    control: Optional[Control] = None,
 ) -> None:
     """Blocking call -- run in a dedicated thread."""
     # Build first: it raises the actionable "pip install mcp" error, whereas
     # importing uvicorn (an mcp dependency) first would fail with a bare
     # ModuleNotFoundError that doesn't say what to install.
-    app = build_mcp_app(host, auth_token, submit, describers, pickers, rate_limiter)
+    app = build_mcp_app(host, auth_token, submit, describers, pickers, rate_limiter, control)
 
     import uvicorn
 

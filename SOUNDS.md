@@ -16,13 +16,14 @@ Sufiks `*N` odtwarza ten sam dźwięk N razy pod rząd (max 10), bez pisania
 tagu N razy:
 
 ```bash
-curl -d "<footstep_concrete_000*6> Ktoś idzie" https://ntfy.sh/<topic>
+curl -d "<knock*3> Ktoś puka" https://ntfy.sh/<topic>
 ```
 
 Źródła, obie CC0 (public domain, bez wymogu podania autora):
 [kenney.nl](https://kenney.nl) (Voiceover Pack Fighter, Music Jingles) oraz
 [80 CC0 creature SFX](https://opengameart.org/content/80-cc0-creature-sfx) autorstwa
-rubberduck na OpenGameArt.org. Trzy paczki, 211 plików łącznie.
+rubberduck na OpenGameArt.org. Trzy paczki, 211 plików łącznie, plus jeden dźwięk
+wygenerowany przez skrypt (`knock`, sekcja na końcu) -- 212.
 
 ## Voiceover Pack (Fighter) (46)
 
@@ -243,3 +244,7 @@ rubberduck na OpenGameArt.org. Trzy paczki, 211 plików łącznie.
 - `weird03`
 - `weird04`
 - `weird05`
+
+## Wygenerowane (1)
+
+- `knock` -- trzykrotne pukanie do drzwi, syntezowane przez `scripts/download_effects.sh`

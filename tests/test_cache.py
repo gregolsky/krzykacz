@@ -1,6 +1,6 @@
 import os
 
-from krzykacz.tts import SWEEP_INTERVAL_S, CachedTts, PiperTts, Prosody, Tts, VoiceSpec
+from krzykacz.tts import SWEEP_INTERVAL_S, CachedTts, EspeakTts, PiperTts, Prosody, Tts, VoiceSpec
 
 
 class CountingTts(Tts):
@@ -230,3 +230,23 @@ def test_play_is_delegated(tmp_path):
     cache.play(b"pcm")
 
     assert played == [b"pcm"]
+
+
+def test_espeak_voices_and_knobs_get_separate_cache_entries(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeResult:
+        stdout = b"RIFF\x00\x00\x00\x00WAVEdata\x00\x00\x00\x00pcm"
+
+    monkeypatch.setattr(
+        "krzykacz.tts.subprocess.run", lambda cmd, **kw: calls.append(cmd) or FakeResult()
+    )
+    tts = make_cache(tmp_path, EspeakTts(voices={"m": "pl+m3", "f": "pl+f3"}))
+
+    tts.synthesize("hej", "m")
+    tts.synthesize("hej", "m")  # hit
+    tts.synthesize("hej", "f")
+    tts.synthesize("hej", "m", Prosody(variation=0.2))
+    tts.synthesize("hej", "m", Prosody(rhythm=1.2))
+
+    assert len(calls) == 4

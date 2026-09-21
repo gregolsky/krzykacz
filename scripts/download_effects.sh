@@ -8,7 +8,11 @@
 # Sources: kenney.nl (Voiceover Pack Fighter, Music Jingles) and
 # opengameart.org (80 CC0 creature SFX by rubberduck). All CC0.
 #
-# Requires: curl, unzip.
+# Also synthesizes `knock` (three knocks on a door) with ffmpeg -- there's no
+# CC0 recording of it in the packs above, and generating it ourselves keeps the
+# soundboard entirely CC0 with nothing more to download.
+#
+# Requires: curl, unzip, ffmpeg (for `knock`).
 set -euo pipefail
 
 DEST="${1:-/var/lib/krzykacz/assets}"
@@ -74,6 +78,17 @@ for pack in "${!PACKS[@]}"; do
         cp "$src" "$out"
     done
 done
+
+# Three decaying thumps (a ~150 Hz body plus a ~310 Hz overtone and a short
+# noise click for the knuckle), 0.28 s apart. Written to a temp name first so
+# an interrupted run never leaves a truncated `knock` that the -s check below
+# would then treat as done.
+if [ ! -s "$DEST/knock" ]; then
+    echo "synthesizing: knock"
+    ffmpeg -loglevel error -y -f lavfi -i "aevalsrc='if(lt(t,0.84), 0.8*exp(-32*mod(t,0.28))*(0.7*sin(2*PI*150*mod(t,0.28))+0.35*sin(2*PI*310*mod(t,0.28))+0.25*(random(0)*2-1)*exp(-260*mod(t,0.28))), 0)':s=44100:d=1.0" \
+        -ac 1 -f wav "$WORKDIR/knock"
+    cp "$WORKDIR/knock" "$DEST/knock"
+fi
 
 echo "done: $DEST"
 ls "$DEST" | wc -l

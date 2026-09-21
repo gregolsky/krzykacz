@@ -38,7 +38,7 @@ def server_factory():
             announcer.submit,
             describers or make_describers(),
             pickers or make_pickers(),
-            announcer.snapshot,
+            announcer.control,
             rate_limiter,
         )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -358,6 +358,7 @@ def test_queue_returns_playing_and_pending(server_factory):
     assert body == {
         "playing": {"content": "teraz", "voice": "justyna", "repeat": 2},
         "pending": [{"content": "czeka", "voice": None, "repeat": 1}],
+        "muted": False,
     }
 
 
@@ -368,7 +369,7 @@ def test_queue_playing_is_null_when_idle(server_factory):
     status, body = get(server, QUEUE_PATH)
 
     assert status == 200
-    assert body == {"playing": None, "pending": []}
+    assert body == {"playing": None, "pending": [], "muted": False}
 
 
 def test_queue_serializes_repeat_envelopes(server_factory):
@@ -539,3 +540,63 @@ def test_random_sound_post_with_no_content_length_header_succeeds(server_factory
 
     assert b" 202 " in response.split(b"\r\n", 1)[0]
     assert announcer.submitted == [Msg(content="<fight>")]
+
+
+def test_mute_and_unmute_round_trip(server_factory):
+    announcer = FakeAnnouncer()
+    server = server_factory(make_config(), announcer)
+
+    assert post(server, "/v1/mute", "") == (200, {"muted": True})
+    assert announcer.muted is True
+    assert get(server, "/v1/queue")[1]["muted"] is True
+
+    assert post(server, "/v1/unmute", "") == (200, {"muted": False})
+    assert announcer.muted is False
+    assert get(server, "/v1/queue")[1]["muted"] is False
+
+
+def test_mute_requires_auth(server_factory):
+    announcer = FakeAnnouncer()
+    server = server_factory(make_config(auth_token="secret"), announcer)
+
+    status, _ = post(server, "/v1/mute", "")
+
+    assert status == 401
+    assert announcer.muted is False
+
+
+def test_get_on_mute_paths_is_405_not_404(server_factory):
+    server = server_factory(make_config(), FakeAnnouncer())
+
+    assert get(server, "/v1/mute")[0] == 405
+    assert get(server, "/v1/unmute")[0] == 405
+
+
+def test_mute_is_not_rate_limited_even_after_the_ip_spent_its_budget(server_factory):
+    announcer = FakeAnnouncer()
+    server = server_factory(make_config(), announcer, rate_limiter=IpRateLimiter(60))
+
+    assert post(server, PUBLISH_PATH, "one")[0] == 202
+    assert post(server, PUBLISH_PATH, "two")[0] == 429  # budget spent
+
+    assert post(server, "/v1/mute", "")[0] == 200
+    assert post(server, "/v1/mute", "")[0] == 200
+    assert post(server, "/v1/unmute", "")[0] == 200
+
+
+def test_publish_dropped_because_muted_says_so(server_factory):
+    announcer = FakeAnnouncer(accept=False)
+    announcer.muted = True
+    server = server_factory(make_config(), announcer)
+
+    status, body = post(server, PUBLISH_PATH, "hello")
+
+    assert (status, body) == (503, {"status": "dropped", "reason": "muted"})
+
+
+def test_publish_dropped_for_a_full_queue_carries_no_mute_reason(server_factory):
+    server = server_factory(make_config(), FakeAnnouncer(accept=False))
+
+    status, body = post(server, PUBLISH_PATH, "hello")
+
+    assert (status, body) == (503, {"status": "dropped"})

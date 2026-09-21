@@ -10,8 +10,8 @@ from urllib.parse import parse_qs, urlsplit
 from .announcer import Submit
 from .audit import log_call
 from .auth import check_bearer_token
-from .metadata import Describer, Describers
-from .protocol import MAX_CONTENT_BYTES, Envelope, Msg, Repeat, parse
+from .metadata import Control, Describer, Describers, describe_queue
+from .protocol import MAX_CONTENT_BYTES, Msg, parse
 from .random_picks import Pickers
 from .ratelimit import IpRateLimiter, rate_limit_or_log
 
@@ -24,38 +24,19 @@ VOICES_PATH = "/v1/voices"
 EFFECTS_PATH = "/v1/effects"
 LIMITS_PATH = "/v1/limits"
 QUEUE_PATH = "/v1/queue"
-POST_PATHS = (PUBLISH_PATH, RANDOM_SOUND_PATH, RANDOM_CURSE_PATH)
+MUTE_PATH = "/v1/mute"
+UNMUTE_PATH = "/v1/unmute"
+POST_PATHS = (PUBLISH_PATH, RANDOM_SOUND_PATH, RANDOM_CURSE_PATH, MUTE_PATH, UNMUTE_PATH)
 KNOWN_PATHS = POST_PATHS + (VOICES_PATH, EFFECTS_PATH, LIMITS_PATH, QUEUE_PATH)
 
-# Callable returning the /v1/queue payload; see krzykacz.announcer.Announcer.snapshot.
-Snapshot = Callable[[], Dict[str, object]]
-
 MAX_BODY_BYTES = MAX_CONTENT_BYTES
-
-
-def _serialize_envelope(envelope: Optional[Envelope]) -> Optional[Dict[str, object]]:
-    if envelope is None:
-        return None
-    if isinstance(envelope, Repeat):
-        return {"replay": envelope.number}
-    return {"content": envelope.content, "voice": envelope.voice, "repeat": envelope.repeat_count}
-
-
-def _queue_payload(snapshot: Snapshot) -> Dict[str, object]:
-    """Adapts the announcer's snapshot into the /v1/queue payload. Lives here
-    rather than on the announcer because the envelope-to-JSON shape is this
-    transport's representation choice."""
-    state = snapshot()
-    return {
-        "playing": _serialize_envelope(state["playing"]),
-        "pending": [_serialize_envelope(envelope) for envelope in state["pending"]],
-    }
 
 
 class PublishHandler(BaseHTTPRequestHandler):
     """POST /v1/publish with the same body+Tags ntfy accepts (see
     protocol.parse); POST /v1/random-sound and /v1/random-curse to trigger a
-    random pick with no body; plus a read-only GET per concern: /v1/voices,
+    random pick with no body; POST /v1/mute and /v1/unmute to silence or
+    restore the box; plus a read-only GET per concern: /v1/voices,
     /v1/effects, /v1/limits and /v1/queue."""
 
     # Bounds how long a connection can sit idle (e.g. headers sent, body
@@ -70,11 +51,13 @@ class PublishHandler(BaseHTTPRequestHandler):
         submit: Submit,
         get_routes: Dict[str, Describer],
         pickers: Pickers,
+        control: Control,
         auth_token: Optional[str],
         rate_limiter: IpRateLimiter,
         **kwargs,
     ):
         self._submit = submit
+        self._control = control
         self._get_routes = get_routes
         self._pickers = pickers
         self._auth_token = auth_token
@@ -134,7 +117,9 @@ class PublishHandler(BaseHTTPRequestHandler):
         if not self._route(parts.path, POST_PATHS):
             return
 
-        if parts.path == PUBLISH_PATH:
+        if parts.path in (MUTE_PATH, UNMUTE_PATH):
+            self._mute(parts.path == MUTE_PATH)
+        elif parts.path == PUBLISH_PATH:
             self._publish()
         elif parts.path == RANDOM_SOUND_PATH:
             self._random("random-sound", self._pickers.sound)
@@ -145,6 +130,24 @@ class PublishHandler(BaseHTTPRequestHandler):
             self._random(
                 "random-curse", functools.partial(self._pickers.curse, intensity, style)
             )
+
+    def _mute(self, muted: bool) -> None:
+        """Deliberately not rate-limited, unlike every other POST: this is
+        what you reach for while the speaker is misbehaving, so it must not be
+        refused because the same IP just spent its budget publishing the
+        thing that needs silencing. It's authenticated like the rest, doesn't
+        touch the light or the speaker, and is idempotent, so there's nothing
+        for a limiter to protect."""
+        self._control.set_muted(muted)
+        self._respond(200, {"muted": muted})
+
+    def _dropped(self) -> dict:
+        """The body for a submit that was refused. Says why when it's mute,
+        since "dropped" alone reads as a full queue."""
+        payload: dict = {"status": "dropped"}
+        if self._control.is_muted():
+            payload["reason"] = "muted"
+        return payload
 
     def _publish(self) -> None:
         try:
@@ -172,7 +175,7 @@ class PublishHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length).decode("utf-8", errors="replace")
         envelope = parse(body, self._tags())
         queued = self._submit(envelope)
-        self._respond(202 if queued else 503, {"status": "queued" if queued else "dropped"})
+        self._respond(202 if queued else 503, {"status": "queued"} if queued else self._dropped())
 
     def _random(self, action: str, make_msg: Callable[[], Optional[Msg]]) -> None:
         """Shared shape for the two randomized actions: no request body (so no
@@ -192,7 +195,7 @@ class PublishHandler(BaseHTTPRequestHandler):
         self._respond(
             202 if queued else 503,
             {
-                "status": "queued" if queued else "dropped",
+                **({"status": "queued"} if queued else self._dropped()),
                 "content": msg.content,
                 "voice": msg.voice,
                 "speed": msg.speed,
@@ -207,7 +210,7 @@ def build_http_server(
     submit: Submit,
     describers: Describers,
     pickers: Pickers,
-    snapshot: Snapshot,
+    control: Control,
     rate_limiter: Optional[IpRateLimiter] = None,
 ) -> ThreadingHTTPServer:
     # Which URL serves which view is decided here, so callers hand over the
@@ -216,13 +219,14 @@ def build_http_server(
         VOICES_PATH: describers.voices,
         EFFECTS_PATH: describers.effects,
         LIMITS_PATH: describers.limits,
-        QUEUE_PATH: functools.partial(_queue_payload, snapshot),
+        QUEUE_PATH: functools.partial(describe_queue, control.snapshot),
     }
     handler = functools.partial(
         PublishHandler,
         submit=submit,
         get_routes=get_routes,
         pickers=pickers,
+        control=control,
         auth_token=auth_token,
         rate_limiter=rate_limiter if rate_limiter is not None else IpRateLimiter.disabled(),
     )

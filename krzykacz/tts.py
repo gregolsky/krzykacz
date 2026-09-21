@@ -1,19 +1,17 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import logging
 import os
+import struct
 import subprocess
 import time
-import wave
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Tuple, Union
 
 from .procutil import (
     PLAYBACK_TIMEOUT_SLACK_S,
-    aplay_cmd,
     aplay_raw_cmd,
     communicate_or_kill,
     raw_pcm_duration_s,
@@ -40,12 +38,37 @@ def _synthesis_timeout(text: str) -> float:
     return SYNTHESIS_TIMEOUT_BASE_S + len(text.encode("utf-8")) * SYNTHESIS_TIMEOUT_PER_BYTE_S
 
 
-def _wav_duration_s(audio: bytes) -> float:
-    try:
-        with wave.open(io.BytesIO(audio), "rb") as wav:
-            return wav.getnframes() / float(wav.getframerate())
-    except (wave.Error, EOFError):
-        return 0.0
+def _wav_to_pcm(audio: bytes) -> bytes:
+    """Returns the sample data of a RIFF/WAVE stream, headerless -- the same
+    shape PiperTts's `--output-raw` produces.
+
+    Deliberately not the `wave` module: `espeak-ng --stdout` writes to a pipe
+    and can't seek back to patch the header, so it declares a placeholder
+    data-chunk length (~2 GiB) that `wave` would believe. The declared size is
+    ignored here; whatever follows the `data` chunk header is the audio.
+    Anything that isn't a WAVE stream (espeak-ng failed and printed nothing,
+    say) yields b"", which callers already treat as "nothing to say"."""
+    if audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+        return b""
+    pos = 12
+    while pos + 8 <= len(audio):
+        chunk_id = audio[pos : pos + 4]
+        (size,) = struct.unpack("<I", audio[pos + 4 : pos + 8])
+        if chunk_id == b"data":
+            return audio[pos + 8 :]
+        pos += 8 + size + (size & 1)  # chunks are word-aligned
+    return b""
+
+
+def _play_raw_pcm(audio: bytes, alsa_device: Optional[str], sample_rate: int) -> None:
+    """Plays headerless S16_LE mono PCM through aplay. Shared by every engine
+    that renders that format, so how it's played (and how long it's allowed to
+    take) is decided once."""
+    aplay = subprocess.Popen(
+        aplay_raw_cmd(alsa_device, sample_rate, channels=1), stdin=subprocess.PIPE
+    )
+    duration = raw_pcm_duration_s(audio, sample_rate, channels=1)
+    communicate_or_kill(aplay, audio, timeout=duration + PLAYBACK_TIMEOUT_SLACK_S)
 
 
 class Prosody(NamedTuple):
@@ -204,59 +227,137 @@ class PiperTts(Tts):
         return result.stdout
 
     def play(self, audio: bytes) -> None:
-        aplay = subprocess.Popen(
-            aplay_raw_cmd(self.alsa_device, self.sample_rate, channels=1),
-            stdin=subprocess.PIPE,
-        )
-        duration = raw_pcm_duration_s(audio, self.sample_rate, channels=1)
-        communicate_or_kill(aplay, audio, timeout=duration + PLAYBACK_TIMEOUT_SLACK_S)
+        _play_raw_pcm(audio, self.alsa_device, self.sample_rate)
 
 
 class EspeakTts(Tts):
-    """Fallback backend: espeak-ng, piped through aplay for consistent ALSA device
-    selection with PiperTts. `voice` here (if given) is passed straight through as
-    an espeak-ng voice/language code -- it isn't matched against Piper's named
-    voices.
+    """espeak-ng, rendered to the same headerless 22050 Hz mono PCM as
+    PiperTts so the two can share one playback path and be freely
+    concatenated -- see RoutedTts.
 
-    Of the three prosody knobs only `speed` maps onto anything here (`-s`,
-    words per minute). `variation` and `rhythm` are Piper/VITS sampling
-    parameters with no espeak-ng equivalent, so they're ignored rather than
-    approximated -- this is the no-hardware fallback, not the backend whose
-    output anyone tunes."""
+    `voices` maps a wire name (`espeak_male`) to an espeak-ng voice spec
+    (`pl+m3`: language plus a male/female/character variant). The mapping
+    exists because the protocol's voice-name alphabet has no `+` in it. A
+    name that isn't in `voices` is passed straight through as a spec, and no
+    name at all means `voice` -- which is how `KRZYKACZ_TTS=espeak` has
+    always worked.
 
-    # espeak-ng's own default words-per-minute, which `speed` scales.
+    The protocol's knobs are Piper's, so two of the three map only
+    approximately. Each is anchored so that Piper's default lands on
+    espeak-ng's default, leaving an untagged message neutral:
+
+    - `speed` -> `-s` words per minute, `175 * speed`.
+    - `variation` -> `-p` pitch (0-99). Both are "how far from the voice's
+      middle"; espeak-ng has no sampling noise to widen, so pitch is the
+      closest audible stand-in.
+    - `rhythm` -> `-g` pause between words, in 10 ms units. Only above
+      Piper's default: a gap can't be negative, so a rhythm below 0.8 is
+      the same as 0.8."""
+
+    SAMPLE_RATE = 22050  # espeak-ng's own output rate; verified on the Pi.
     BASE_WORDS_PER_MINUTE = 175
+    DEFAULT_PITCH = 50
+    MAX_PITCH = 99
+    # The Piper defaults the anchors above are relative to.
+    PIPER_DEFAULT_VARIATION = 0.667
+    PIPER_DEFAULT_RHYTHM = 0.8
 
     def __init__(
-        self, voice: str = "pl", alsa_device: Optional[str] = None, prosody: Prosody = Prosody()
+        self,
+        voice: str = "pl",
+        alsa_device: Optional[str] = None,
+        prosody: Prosody = Prosody(),
+        voices: Optional[Dict[str, str]] = None,
     ):
         self.voice = voice
         self.alsa_device = alsa_device
         self.prosody = prosody
+        self.voices: Dict[str, str] = dict(voices or {})
+
+    def _spec(self, voice: Optional[str]) -> str:
+        return self.voices.get(voice, voice) if voice else self.voice
+
+    def _flags(self, prosody: Prosody) -> List[str]:
+        flags: List[str] = []
+        if prosody.speed is not None:
+            flags += ["-s", str(int(self.BASE_WORDS_PER_MINUTE * prosody.speed))]
+        if prosody.variation is not None:
+            pitch = round(self.DEFAULT_PITCH * prosody.variation / self.PIPER_DEFAULT_VARIATION)
+            flags += ["-p", str(min(max(pitch, 0), self.MAX_PITCH))]
+        if prosody.rhythm is not None:
+            gap = round((prosody.rhythm - self.PIPER_DEFAULT_RHYTHM) * 10)
+            flags += ["-g", str(max(gap, 0))]
+        return flags
 
     def fingerprint(self, voice: Optional[str] = None) -> str:
-        return f"espeak:{voice or self.voice}:{self.prosody.speed}"
+        return f"espeak:{self._spec(voice)}:{self.SAMPLE_RATE}:{self.prosody}"
+
+    @property
+    def concatenable(self) -> bool:
+        return True
 
     def synthesize(
         self, text: str, voice: Optional[str] = None, prosody: Prosody = Prosody()
     ) -> bytes:
-        speed = self.prosody.merge(prosody).speed
-        cmd = ["espeak-ng", "-v", voice or self.voice]
-        if speed is not None:
-            cmd += ["-s", str(int(self.BASE_WORDS_PER_MINUTE * speed))]
+        cmd = ["espeak-ng", "-v", self._spec(voice)] + self._flags(self.prosody.merge(prosody))
+        # Text goes on stdin, not argv: argv would let a message starting
+        # with "-" be parsed as an option.
         result = subprocess.run(
-            cmd + ["--stdout", text],
+            cmd + ["--stdout"],
+            input=text.encode("utf-8"),
             stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             timeout=_synthesis_timeout(text),
         )
-        return result.stdout
+        return _wav_to_pcm(result.stdout)
 
     def play(self, audio: bytes) -> None:
-        aplay = subprocess.Popen(aplay_cmd(self.alsa_device), stdin=subprocess.PIPE)
-        # The WAV header carries its own sample rate, so duration is computed
-        # from that rather than assumed -- espeak-ng's output rate isn't
-        # tracked on this class.
-        communicate_or_kill(aplay, audio, timeout=_wav_duration_s(audio) + PLAYBACK_TIMEOUT_SLACK_S)
+        _play_raw_pcm(audio, self.alsa_device, self.SAMPLE_RATE)
+
+
+class RoutedTts(Tts):
+    """Serves Piper's voices and espeak-ng's from one place, choosing by voice
+    name, so both are ordinary `voice=` values.
+
+    That only works because both engines emit the same thing -- headerless
+    S16_LE mono at one sample rate -- which is what lets `play` and
+    `concatenable` be answered once here, rather than per voice (`Tts.play`
+    isn't told which voice made the audio). A name in neither map falls to
+    Piper, which resolves it to its default voice as it always has. A name in
+    both goes to Piper."""
+
+    def __init__(self, piper: PiperTts, espeak: EspeakTts):
+        if piper.sample_rate != espeak.SAMPLE_RATE:
+            raise ValueError(
+                f"Piper voices render at {piper.sample_rate} Hz but espeak-ng at "
+                f"{espeak.SAMPLE_RATE} Hz; they can't share a playback path"
+            )
+        self._piper = piper
+        self._espeak = espeak
+        shadowed = sorted(set(espeak.voices) & set(piper.voices))
+        if shadowed:
+            logger.warning("Voices defined for both Piper and espeak-ng, using Piper: %s", shadowed)
+        self._espeak_names = frozenset(espeak.voices) - frozenset(piper.voices)
+
+    def _route(self, voice: Optional[str]) -> Tts:
+        return self._espeak if voice in self._espeak_names else self._piper
+
+    def fingerprint(self, voice: Optional[str] = None) -> str:
+        return self._route(voice).fingerprint(voice)
+
+    @property
+    def concatenable(self) -> bool:
+        return True
+
+    def synthesize(
+        self, text: str, voice: Optional[str] = None, prosody: Prosody = Prosody()
+    ) -> bytes:
+        return self._route(voice).synthesize(text, voice, prosody)
+
+    def play(self, audio: bytes) -> None:
+        # Piper's device and rate serve both engines -- __init__ checked
+        # that they render at the same rate.
+        self._piper.play(audio)
 
 
 class CachedTts(Tts):

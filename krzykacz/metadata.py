@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Callable, Dict, List, NamedTuple, Sequence
+from typing import Callable, Dict, List, NamedTuple, Optional, Sequence
 
 from .protocol import (
     MAX_CONTENT_BYTES,
@@ -13,6 +13,8 @@ from .protocol import (
     RHYTHM_RANGE,
     SPEED_RANGE,
     VARIATION_RANGE,
+    Envelope,
+    Repeat,
 )
 
 logger = logging.getLogger(__name__)
@@ -21,6 +23,19 @@ logger = logging.getLogger(__name__)
 # describe_* functions below, with their instance-specific arguments already
 # bound (see krzykacz.__main__).
 Describer = Callable[[], Dict[str, object]]
+
+
+class Control(NamedTuple):
+    """What a transport can do to the running announcer besides submitting to
+    it: read what's queued (and whether it's muted), and switch mute. Bundled
+    like Describers so both transports are handed the same instance's
+    controls, bound methods of krzykacz.announcer.Announcer."""
+
+    snapshot: Callable[[], Dict[str, object]]
+    set_muted: Callable[[bool], None]
+    # Separate from `snapshot` so a transport explaining a refused submit
+    # reads one flag instead of copying the whole queue under its lock.
+    is_muted: Callable[[], bool]
 
 
 class Describers(NamedTuple):
@@ -105,4 +120,25 @@ def describe_limits(
         "rhythm_range": list(RHYTHM_RANGE),
         "curse_intensities": list(curse_intensities),
         "curse_styles": list(curse_styles),
+    }
+
+
+def _serialize_envelope(envelope: Optional[Envelope]) -> Optional[Dict[str, object]]:
+    if envelope is None:
+        return None
+    if isinstance(envelope, Repeat):
+        return {"replay": envelope.number}
+    return {"content": envelope.content, "voice": envelope.voice, "repeat": envelope.repeat_count}
+
+
+def describe_queue(snapshot: Callable[[], Dict[str, object]]) -> Dict[str, object]:
+    """Adapts the announcer's snapshot into the queue view both transports
+    serve (GET /v1/queue, the queue_status MCP tool). Lives here rather than
+    on the announcer because the envelope-to-JSON shape is a presentation
+    choice, not the announcer's."""
+    state = snapshot()
+    return {
+        "playing": _serialize_envelope(state["playing"]),
+        "pending": [_serialize_envelope(envelope) for envelope in state["pending"]],
+        "muted": bool(state.get("muted", False)),
     }

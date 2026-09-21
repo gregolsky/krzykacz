@@ -1,5 +1,5 @@
 from krzykacz.config import Config
-from krzykacz.metadata import Describers
+from krzykacz.metadata import Control, Describers
 from krzykacz.random_picks import Pickers
 from krzykacz.tts import Prosody
 
@@ -9,13 +9,23 @@ class FakeAnnouncer:
         self.submitted = []
         self._accept = accept
         self.playing = None
+        self.muted = False
 
     def submit(self, envelope):
         self.submitted.append(envelope)
         return self._accept
 
     def snapshot(self):
-        return {"playing": self.playing, "pending": list(self.submitted)}
+        return {"playing": self.playing, "pending": list(self.submitted), "muted": self.muted}
+
+    def set_muted(self, muted):
+        self.muted = muted
+
+    @property
+    def control(self):
+        return Control(
+            snapshot=self.snapshot, set_muted=self.set_muted, is_muted=lambda: self.muted
+        )
 
 
 def make_config(**overrides):
@@ -30,6 +40,7 @@ def make_config(**overrides):
         piper_model="unused.onnx",
         piper_extra_voices={},
         espeak_voice="pl",
+        espeak_voices={},
         alsa_device=None,
         prosody=Prosody(),
         effects_backend="null",

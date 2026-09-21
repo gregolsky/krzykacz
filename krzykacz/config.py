@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, Iterator, Optional, Tuple
 
 from .protocol import RHYTHM_RANGE, SPEED_RANGE, VARIATION_RANGE, clean_scale
 from .tts import Prosody, VoiceSpec
@@ -23,31 +23,58 @@ def _env_scale(name: str, bounds: Tuple[float, float]) -> Optional[float]:
     return clean_scale(_env(name), bounds)
 
 
+# Ships as the default so the espeak-ng voices work without any configuration.
+# The wire names are aliases because the protocol's voice-name alphabet has no
+# "+"; each value is an espeak-ng language plus a variant (see
+# `espeak-ng --voices=variant`).
+DEFAULT_ESPEAK_VOICES: Dict[str, str] = {
+    "espeak_male": "pl+m3",
+    "espeak_male2": "pl+m1",
+    "espeak_male3": "pl+m7",
+    "espeak_female": "pl+f3",
+    "espeak_female2": "pl+f1",
+    "espeak_female3": "pl+f5",
+    "espeak_whisper": "pl+whisper",
+    "espeak_croak": "pl+croak",
+    "espeak_announcer": "pl+announcer",
+    "espeak_robot": "pl+klatt2",
+}
+
+
+def _split_entries(raw: Optional[str]) -> Iterator[Tuple[str, str]]:
+    """Yields (name, value) from "name1=value1,name2=value2". Blank input and
+    entries without an "=" yield nothing -- a typo in one extra voice
+    shouldn't crash startup."""
+    if not raw:
+        return
+    for part in raw.split(","):
+        name, sep, value = part.strip().partition("=")
+        if sep and name.strip():
+            yield name.strip(), value.strip()
+
+
 def _parse_voices(raw: Optional[str]) -> Dict[str, VoiceSpec]:
     """Parses "name1=/path1.onnx,name2=/path2.onnx:3" into a dict. A value
     ending in ":<digits>" addresses a specific embedded speaker index within
     a multi-speaker model (e.g. hvsr-robotics/tts-pl-piper-v2 -- one .onnx
     file, several named voices sharing it via a different index each);
-    anything else is an ordinary single-speaker model path. Blank input
-    yields an empty dict; malformed entries (no "=") are skipped with a
-    warning rather than crashing startup over a typo in one extra voice."""
-    if not raw:
-        return {}
+    anything else is an ordinary single-speaker model path."""
     voices: Dict[str, VoiceSpec] = {}
-    for part in raw.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        name, sep, value = part.partition("=")
-        if not sep:
-            continue
-        value = value.strip()
+    for name, value in _split_entries(raw):
         path, colon, speaker = value.rpartition(":")
         if colon and speaker.isdigit():
-            voices[name.strip()] = VoiceSpec(path, int(speaker))
+            voices[name] = VoiceSpec(path, int(speaker))
         else:
-            voices[name.strip()] = VoiceSpec(value, None)
+            voices[name] = VoiceSpec(value, None)
     return voices
+
+
+def _parse_espeak_voices(raw: Optional[str]) -> Dict[str, str]:
+    """Parses "espeak_male=pl+m3,espeak_female=pl+f3". Unset means the
+    built-in set; an explicitly empty value means no espeak-ng voices."""
+    if raw is None:
+        return dict(DEFAULT_ESPEAK_VOICES)
+    return {name: spec for name, spec in _split_entries(raw) if spec}
 
 
 @dataclass
@@ -64,6 +91,7 @@ class Config:
     piper_model: str
     piper_extra_voices: Dict[str, VoiceSpec]
     espeak_voice: str
+    espeak_voices: Dict[str, str]
     alsa_device: Optional[str]
     prosody: Prosody
 
@@ -113,6 +141,7 @@ class Config:
             ),
             piper_extra_voices=_parse_voices(_env("KRZYKACZ_PIPER_VOICES")),
             espeak_voice=_env("KRZYKACZ_ESPEAK_VOICE", "pl"),
+            espeak_voices=_parse_espeak_voices(_env("KRZYKACZ_ESPEAK_VOICES")),
             alsa_device=_env("KRZYKACZ_ALSA_DEVICE"),
             prosody=Prosody(
                 speed=_env_scale("KRZYKACZ_PIPER_SPEED", SPEED_RANGE),

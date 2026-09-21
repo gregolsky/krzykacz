@@ -40,9 +40,26 @@ did before these existed. Instance-wide defaults live in
 `KRZYKACZ_PIPER_SPEED` / `_VARIATION` / `_RHYTHM`; a tag overrides them per
 message. The live ranges are in `GET /v1/limits`.
 
+The espeak-ng voices (below) honour the same three knobs, mapped onto what
+espeak-ng has. Each is anchored so that Piper's default lands on espeak-ng's
+default, which leaves an untagged message neutral:
+
+| Tag | espeak-ng flag | Mapping |
+|---|---|---|
+| `speed` | `-s` words per minute | `175 * speed` (0.5-2.0 is 87-350 wpm) |
+| `variation` | `-p` pitch, 0-99 | `50 * variation / 0.667`, clamped -- pitch is the closest audible stand-in for "how far from the voice's middle" |
+| `rhythm` | `-g` pause between words, in 10 ms units | `(rhythm - 0.8) * 10`, floored at 0 |
+
+These are approximations: `variation` and `rhythm` are VITS sampling
+parameters and espeak-ng has no exact equivalent. In particular a `rhythm`
+below 0.8 is the same as 0.8, because a word gap can't be negative. The
+instance-wide `KRZYKACZ_PIPER_SPEED` / `_VARIATION` / `_RHYTHM` defaults apply
+to the espeak-ng voices as well.
+
 `voice` (allowed characters: letters, digits, `-`, `_`, max 64 chars) selects a
-Piper voice by name from `KRZYKACZ_PIPER_VOICES`. A missing tag or unknown
-name falls back to the default voice (`KRZYKACZ_PIPER_DEFAULT_VOICE`).
+Piper voice by name from `KRZYKACZ_PIPER_VOICES`, or one of the espeak-ng voices
+from `KRZYKACZ_ESPEAK_VOICES`. A missing tag or unknown name falls back to the
+default voice (`KRZYKACZ_PIPER_DEFAULT_VOICE`).
 
 Supported `voice` values in the default configuration (see "Piper voices" below):
 
@@ -57,11 +74,18 @@ Supported `voice` values in the default configuration (see "Piper voices" below)
 | `gosia` | female voice |
 | `bass` | male voice, high quality |
 | `mc_speech` | male voice |
+| `espeak_male`, `espeak_male2`, `espeak_male3` | espeak-ng male voices |
+| `espeak_female`, `espeak_female2`, `espeak_female3` | espeak-ng female voices |
+| `espeak_whisper` | espeak-ng, whispered |
+| `espeak_croak` | espeak-ng, croaky |
+| `espeak_announcer` | espeak-ng, public-address style |
+| `espeak_robot` | espeak-ng, robotic |
 
 A value outside this list isn't an error -- it silently falls back to the default
 voice (with a warning in the log). The `espeak` backend (`KRZYKACZ_TTS=espeak`)
-doesn't know these names -- there, `voice` is passed straight through as an
-`espeak-ng` language/voice code (e.g. `pl`, `en`).
+doesn't know the Piper names -- there, `voice` is either one of the `espeak_*`
+names above or passed straight through as an `espeak-ng` language/voice code
+(e.g. `pl`, `en`).
 
 A sound effect can be woven anywhere into the body by wrapping its filename
 in `<angle brackets>` -- not just at the start -- and everything plays back
@@ -77,10 +101,10 @@ curl -d "<game_over> Tests failed <fight> Fixing now" https://ntfy.sh/<your-topi
 
 Suffix a tag with `*N` to play that one sound `N` times back to back
 (capped at 10, `MAX_EFFECT_REPEAT`) without writing the tag out N times --
-useful for e.g. a run of footsteps:
+useful for e.g. someone knocking:
 
 ```bash
-curl -d "<footstep_concrete_000*6> Ktoś idzie" https://ntfy.sh/<your-topic>
+curl -d "<knock*3> Ktoś puka" https://ntfy.sh/<your-topic>
 ```
 
 Adjacent sounds (several tags in a row, or one `*N` tag) are decoded
@@ -229,12 +253,36 @@ curl -H "Authorization: Bearer <token>" http://192.168.1.50:8123/v1/queue
 ```json
 {
   "playing": {"content": "Uwaga, obiad gotowy", "voice": "justyna", "repeat": 1},
-  "pending": [{"content": "Backup zakonczony", "voice": null, "repeat": 1}]
+  "pending": [{"content": "Backup zakonczony", "voice": null, "repeat": 1}],
+  "muted": false
 }
 ```
 
 `playing` is `null` when the announcer is idle. A queued `replay` request
 serializes as `{"replay": -1}` instead of `content`/`voice`/`repeat`.
+`muted` is whether the box is currently muted (see below).
+
+#### `POST /v1/mute` and `POST /v1/unmute`
+
+The emergency stop. `mute` silences krzykacz: it refuses anything new,
+discards whatever is still queued, and ends the message being played after its
+current sound or sentence. `unmute` restores normal service:
+
+```bash
+curl -X POST -H "Authorization: Bearer <token>" http://192.168.1.50:8123/v1/mute
+curl -X POST -H "Authorization: Bearer <token>" http://192.168.1.50:8123/v1/unmute
+```
+
+Both respond `200 {"muted": true}` / `{"muted": false}` and are idempotent.
+Unlike every other `POST` they are **not rate-limited**: this is what you reach
+for while the speaker is misbehaving, so it must not be refused because your IP
+just published the thing that needs silencing. They are still subject to
+`KRZYKACZ_AUTH_TOKEN`. While muted, `/v1/publish` and the random endpoints
+respond `503 {"status": "dropped", "reason": "muted"}`.
+
+Mute is not a mid-word cut: the sound or sentence already handed to the
+speaker plays to its end (a long one can take several seconds). Mute is also
+lost on restart -- the service comes back up unmuted.
 
 #### `GET /v1/voices`
 
@@ -247,13 +295,14 @@ curl -H "Authorization: Bearer <token>" http://192.168.1.50:8123/v1/voices
 ```json
 {
   "tts": "piper",
-  "voices": ["darkman", "justyna", "jarvis", "meski", "zenski", "gosia", "bass", "mc_speech"],
+  "voices": ["darkman", "justyna", "jarvis", "meski", "zenski", "gosia", "bass", "mc_speech", "espeak_male", "espeak_female", "..."],
   "default_voice": "darkman"
 }
 ```
 
-`tts` tells you how to interpret `voice`: under `piper` the names come from the
-configured voice map, under `espeak` they're espeak-ng language codes. Voices
+`tts` is the primary engine. Under `piper` the names come from the configured
+voice map, and the `espeak_*` names (see "espeak-ng voices") follow them in the
+same list; under `espeak` the primary voice is an espeak-ng language code. Voices
 backed by a multi-speaker model appear here as ordinary names, one per speaker.
 
 #### `GET /v1/effects`
@@ -312,12 +361,17 @@ Set `KRZYKACZ_MCP_ENABLED=1`. Exposes an MCP server over Streamable HTTP at
   przekleństwo in a random voice at a random speed; see "Przekleństwa and
   random sounds" below for the valid `intensity`/`style` values
 
-and two read-only ones that just report, mirroring `GET /v1/voices` and
-`GET /v1/effects` (not rate-limited, since they touch neither the lamp nor
-the speaker):
+and four that don't trigger anything (not rate-limited, since they touch
+neither the lamp nor the speaker):
 
 - `list_voices()` -- voice names, the default, and the TTS backend
 - `list_effects()` -- sound-effect filenames usable in a `<file>` tag
+- `queue_status()` -- what is playing, what is queued, and whether it is
+  muted (mirrors `GET /v1/queue`)
+- `set_mute(muted)` -- silence krzykacz or let it speak again (mirrors
+  `POST /v1/mute` and `/v1/unmute`); never rate-limited, so it is always
+  available as an emergency stop. While muted the triggering tools answer
+  `dropped (muted)`.
 
 The speaking tools' descriptions (and the server's `instructions`) are
 generated from this instance's actual configuration -- the real list of
@@ -381,11 +435,12 @@ curl -H "Authorization: Bearer $TOKEN" \
 | `KRZYKACZ_LIGHT` | `uhubctl` | `uhubctl` or `null` |
 | `KRZYKACZ_UHUBCTL_LOC` | `1-1` | USB hub location |
 | `KRZYKACZ_UHUBCTL_PORT` | `2` | port number |
-| `KRZYKACZ_TTS` | `piper` | `piper` or `espeak` |
+| `KRZYKACZ_TTS` | `piper` | primary engine: `piper` or `espeak`. The `espeak_*` voices are available either way |
 | `KRZYKACZ_PIPER_DEFAULT_VOICE` | `darkman` | default voice name (key in the voice map) |
 | `KRZYKACZ_PIPER_MODEL` | `/var/lib/krzykacz/voices/pl_PL-darkman-medium.onnx` | path to the default voice's `.onnx` model |
 | `KRZYKACZ_PIPER_VOICES` | *(empty)* | extra voices: `name=/path.onnx,name2=/path2.onnx`; append `:<speaker index>` to a value to select one embedded speaker out of a multi-speaker model, e.g. `staszczyk=/path/pl_PL-tts-pl.onnx:0` -- see "Piper voices" below |
-| `KRZYKACZ_ESPEAK_VOICE` | `pl` | espeak-ng voice (fallback backend) |
+| `KRZYKACZ_ESPEAK_VOICE` | `pl` | espeak-ng voice used when `KRZYKACZ_TTS=espeak` |
+| `KRZYKACZ_ESPEAK_VOICES` | the ten `espeak_*` voices | espeak-ng voices offered as `voice=` values, `name=spec,name2=spec2` (e.g. `espeak_male=pl+m3`); an explicitly empty value turns them off -- see "espeak-ng voices" |
 | `KRZYKACZ_ALSA_DEVICE` | *(unset = system default)* | ALSA device for `aplay` -- **check `aplay -l` on your Pi: the default card may be HDMI, not the jack, in which case you need something like `plughw:1,0`** |
 | `KRZYKACZ_PIPER_SPEED` | *(unset = piper's default)* | instance-wide `speed` (see Protocol above); a `speed` tag on a message overrides this |
 | `KRZYKACZ_PIPER_VARIATION` | *(unset = piper's default)* | instance-wide `variation`; overridden per message by a `variation` tag |
@@ -394,7 +449,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 | `KRZYKACZ_ASSETS_DIR` | `/var/lib/krzykacz/assets` | directory holding sound effect files |
 | `KRZYKACZ_HISTORY` | `10` | how many recent messages to keep in memory |
 | `KRZYKACZ_QUEUE_SIZE` | `10` | max number of messages waiting to be played; anything beyond that is dropped (with a log warning) rather than queued indefinitely |
-| `KRZYKACZ_HTTP_ENABLED` | `0` | set to `1` to enable the HTTP endpoints (`POST /v1/publish`, `/v1/random-sound`, `/v1/random-curse`, plus `GET /v1/voices`, `/v1/effects`, `/v1/limits`, `/v1/queue`) |
+| `KRZYKACZ_HTTP_ENABLED` | `0` | set to `1` to enable the HTTP endpoints (`POST /v1/publish`, `/v1/random-sound`, `/v1/random-curse`, `/v1/mute`, `/v1/unmute`, plus `GET /v1/voices`, `/v1/effects`, `/v1/limits`, `/v1/queue`) |
 | `KRZYKACZ_HTTP_HOST` | `0.0.0.0` | HTTP endpoint bind address |
 | `KRZYKACZ_HTTP_PORT` | `8123` | HTTP endpoint port |
 | `KRZYKACZ_MCP_ENABLED` | `0` | set to `1` to enable the MCP endpoint (requires `pip install mcp`, Python >= 3.10) |
@@ -429,15 +484,13 @@ logged and falls back to synthesizing directly -- a broken cache degrades
 speed, never breaks playback. The directory can be deleted at any time; it's
 rebuilt on demand. Set `KRZYKACZ_CACHE_TTL=0` to disable caching altogether.
 
-`repeat` gets a related optimization on Piper (raw PCM concatenates
-cleanly): the message and `" Powtarzam! "` are each synthesized once and the
+`repeat` gets a related optimization on Piper and on the espeak-ng voices (both
+produce headerless PCM at the same rate, which concatenates cleanly): the message and `" Powtarzam! "` are each synthesized once and the
 requested number of copies are joined as audio, instead of synthesizing the
 whole joined text every time. The separator is cached too, and it's the same
 entry across every message in a given voice, so after the first repeated
 message it's always a cache hit. This also means a long message with a high
 `repeat` gets truncated to whole copies rather than cut off mid-word.
-espeak-ng (the no-hardware fallback) keeps the old joined-text behavior --
-its WAV output doesn't concatenate.
 
 ## Przekleństwa and random sounds 🎲
 
@@ -526,12 +579,44 @@ Download (idempotent -- skips files already on disk):
 The default target directory is `/var/lib/krzykacz/voices`, matching the default
 paths in `KRZYKACZ_PIPER_MODEL` / `KRZYKACZ_PIPER_VOICES` above.
 
+## espeak-ng voices 🤖
+
+Ten more voices come from [espeak-ng](https://github.com/espeak-ng/espeak-ng)
+(`apt install espeak-ng`), a formant synthesizer -- no model files to download,
+and it is quick even on a Pi 3. It sounds robotic next to Piper, which is
+rather the point for a few of them. Each is the Polish voice plus one of
+espeak-ng's male/female/character variants; the wire names are aliases because
+the `voice` alphabet has no `+` in it.
+
+| `voice` | espeak-ng spec | |
+|---|---|---|
+| `espeak_male` | `pl+m3` | male |
+| `espeak_male2` | `pl+m1` | male |
+| `espeak_male3` | `pl+m7` | male |
+| `espeak_female` | `pl+f3` | female |
+| `espeak_female2` | `pl+f1` | female |
+| `espeak_female3` | `pl+f5` | female |
+| `espeak_whisper` | `pl+whisper` | whispered |
+| `espeak_croak` | `pl+croak` | croaky |
+| `espeak_announcer` | `pl+announcer` | public-address style |
+| `espeak_robot` | `pl+klatt2` | robotic |
+
+They are on by default. Change the set with `KRZYKACZ_ESPEAK_VOICES`
+(`espeak_deep=pl+m2,espeak_kid=pl+f4`; `espeak-ng --voices=variant` lists what
+your build has) or turn them off with `KRZYKACZ_ESPEAK_VOICES=`. A name that is
+also a Piper voice goes to Piper. `speed`, `variation` and `rhythm` apply as
+described under Protocol.
+
+Both engines render 22050 Hz mono, which is what lets one voice list serve
+both and lets `repeat` join audio from either. Their output is cached like
+Piper's (see "Audio cache").
+
 ## Sound effects (CC0) 💥
 
-Three packs, all CC0 (public domain, no attribution required): the Voiceover
+Three packs, plus one sound synthesized by the download script, all CC0 (public domain, no attribution required): the Voiceover
 Pack (Fighter) and Music Jingles from [kenney.nl](https://kenney.nl), and
 [80 CC0 creature SFX](https://opengameart.org/content/80-cc0-creature-sfx) by
-rubberduck on OpenGameArt. 211 `.ogg` files total, stored **without an
+rubberduck on OpenGameArt. 211 `.ogg` files, plus a synthesized `knock` (three knocks on a door, generated with `ffmpeg`), stored **without an
 extension** so the tag you type is short -- `<fight>`, `<8bit00>`, `<bark01>`.
 Full list of names in [`SOUNDS.md`](SOUNDS.md), or read live from
 `GET /v1/effects` (the `list_effects` MCP tool reports the same thing).
@@ -588,6 +673,9 @@ sudo /opt/krzykacz/venv/bin/pip install -r /opt/krzykacz/requirements.txt piper-
 # only if using the MCP endpoint (KRZYKACZ_MCP_ENABLED=1, needs Python >= 3.10):
 sudo /opt/krzykacz/venv/bin/pip install mcp
 ```
+
+The `espeak_*` voices and the `knock` sound need two system packages, neither
+of which the install script pulls in: `sudo apt install espeak-ng ffmpeg`.
 
 ```bash
 systemctl status krzykacz
