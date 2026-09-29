@@ -76,6 +76,30 @@ def test_non_numeric_knob_is_ignored_rather_than_failing_the_message():
     assert msg.content == "czesc"
 
 
+def test_prepare_defaults_to_false():
+    assert parse("czesc").prepare is False
+
+
+def test_prepare_tag_accepts_the_usual_truthy_spellings():
+    for value in ("1", "true", "TRUE", "yes", "on", " on "):
+        assert parse("czesc", [f"prepare={value}"]) == Msg(content="czesc", prepare=True), value
+
+
+def test_prepare_tag_with_any_other_value_is_an_ordinary_message():
+    for value in ("0", "false", "no", "", "maybe"):
+        assert parse("czesc", [f"prepare={value}"]) == Msg(content="czesc"), value
+
+
+def test_prepare_combines_with_the_other_tags():
+    assert parse("czesc", ["voice=justyna", "repeat=2", "speed=1.5", "prepare=1"]) == Msg(
+        content="czesc", voice="justyna", repeat_count=2, speed=1.5, prepare=True
+    )
+
+
+def test_replay_tag_wins_over_prepare():
+    assert parse("", ["replay=-1", "prepare=1"]) == Repeat(number=-1)
+
+
 def test_replay_tag_produces_repeat_envelope():
     assert parse("", ["replay=-2"]) == Repeat(number=-2)
 

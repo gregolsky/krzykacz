@@ -1,4 +1,10 @@
-from krzykacz.metadata import describe_effects, describe_limits, describe_voices, list_effects
+from krzykacz.metadata import (
+    describe_effects,
+    describe_limits,
+    describe_queue,
+    describe_voices,
+    list_effects,
+)
 from krzykacz.protocol import (
     MAX_CONTENT_BYTES,
     MAX_EFFECT_REPEAT,
@@ -8,6 +14,7 @@ from krzykacz.protocol import (
     RHYTHM_RANGE,
     SPEED_RANGE,
     VARIATION_RANGE,
+    Msg,
 )
 from krzykacz.random_picks import INTENSITIES, STYLES
 
@@ -100,3 +107,17 @@ def test_the_three_views_do_not_overlap_in_keys():
     assert set(voices) & set(effects) == set()
     assert set(voices) & set(limits) == set()
     assert set(effects) & set(limits) == set()
+
+
+def test_describe_queue_marks_a_prepared_message():
+    state = {
+        "playing": Msg(content="teraz", prepare=True),
+        "pending": [Msg(content="potem")],
+        "muted": False,
+    }
+
+    view = describe_queue(lambda: state)
+
+    assert view["playing"] == {"content": "teraz", "voice": None, "repeat": 1, "prepare": True}
+    # An ordinary message keeps its existing shape -- no "prepare" key at all.
+    assert view["pending"] == [{"content": "potem", "voice": None, "repeat": 1}]
