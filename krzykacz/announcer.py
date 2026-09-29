@@ -158,8 +158,16 @@ class Announcer:
             logger.info("Muted, discarding queued: %r", envelope)
             return
         if isinstance(envelope, Msg):
-            self._history.append(envelope)
-            logger.info("New message: %s", preview(envelope.content))
+            # A prepared message was never heard, so it isn't something to
+            # `replay` -- keeping it out of history also keeps the replay
+            # indices pointing at what people actually heard.
+            if not envelope.prepare:
+                self._history.append(envelope)
+            logger.info(
+                "%s: %s",
+                "Preparing" if envelope.prepare else "New message",
+                preview(envelope.content),
+            )
             msg = envelope
         elif isinstance(envelope, Repeat):
             try:
@@ -192,6 +200,14 @@ class Announcer:
             items = self._render_with_effects(segments, msg.repeat_count, voice, prosody)
         else:
             items = self._render_plain(segments, msg.repeat_count, voice, prosody)
+
+        # Rendering is all `prepare` asks for: the synthesized speech now sits
+        # in the audio cache (when CachedTts is in use), so the same message
+        # sent again without `prepare` skips the multi-second synthesis. The
+        # light stays off -- nothing is being said.
+        if msg.prepare:
+            logger.info("Prepared, not playing: %s", preview(msg.content))
+            return
 
         # Rendering can take seconds; mute may have arrived meanwhile.
         if self._muted.is_set():

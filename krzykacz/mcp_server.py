@@ -33,10 +33,17 @@ def _submit_message(
     speed: Optional[float] = None,
     variation: Optional[float] = None,
     rhythm: Optional[float] = None,
+    prepare: Optional[bool] = None,
 ) -> bool:
     return submit(
         build_msg(
-            content, voice=voice, repeat=repeat, speed=speed, variation=variation, rhythm=rhythm
+            content,
+            voice=voice,
+            repeat=repeat,
+            speed=speed,
+            variation=variation,
+            rhythm=rhythm,
+            prepare=prepare,
         )
     )
 
@@ -206,7 +213,11 @@ def _send_message_description(voices: Dict[str, object]) -> str:
         'brackets, e.g. "<game_over> Tests failed" or "Uwaga <siren> teraz" '
         "-- see list_effects for what's available and the \"*N\" repeat "
         "suffix. `content` longer than about a minute of speech is "
-        "truncated. Returns \"queued\" once "
+        "truncated. Pass `prepare` true to only render the audio into "
+        "krzykacz's cache without playing anything (synthesis can take many "
+        "seconds on a Pi): the identical call later, same `content`, `voice` and "
+        "knobs but without `prepare`, then starts speaking right away. "
+        "Returns \"queued\" once "
         'accepted, "dropped (queue full)" if the pending queue was already '
         "full, or a rate-limit notice if this caller's IP called too "
         "recently -- in that case, wait and retry rather than resubmitting "
@@ -270,11 +281,14 @@ def _build_mcp_server(
         speed: Optional[float] = None,
         variation: Optional[float] = None,
         rhythm: Optional[float] = None,
+        prepare: Optional[bool] = None,
     ) -> str:
         ip = _caller_ip()
         if not rate_limit_or_log(rate_limiter, ip, "mcp.send_message"):
             return _RATE_LIMITED_REPLY
-        queued = _submit_message(submit, content, voice, repeat, speed, variation, rhythm)
+        queued = _submit_message(
+            submit, content, voice, repeat, speed, variation, rhythm, prepare
+        )
         log_call(
             "mcp.send_message",
             ip,
@@ -283,6 +297,7 @@ def _build_mcp_server(
             speed=speed,
             variation=variation,
             rhythm=rhythm,
+            prepare=prepare,
             status="queued" if queued else "dropped",
         )
         return _queue_reply(queued, not queued and is_muted())

@@ -56,6 +56,11 @@ class Msg:
     speed: Optional[float] = None
     variation: Optional[float] = None
     rhythm: Optional[float] = None
+    # Render into the audio cache without playing anything -- see
+    # Announcer._announce. Sending the identical message later (same content,
+    # voice and knobs) then plays straight from the cache instead of waiting
+    # for synthesis.
+    prepare: bool = False
 
 
 @dataclass(frozen=True)
@@ -149,6 +154,18 @@ def _clean_effect_count(value: str) -> int:
     return min(count, MAX_EFFECT_REPEAT)
 
 
+def _clean_flag(value: object) -> bool:
+    """Validates an optional on/off field such as "prepare". Accepts a real
+    bool (MCP) or the usual truthy spellings a tag carries ("1", "true",
+    "yes", "on"); anything else is False -- the field's default behavior,
+    same never-fail-the-message approach as the other _clean_* helpers."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return False
+
+
 def clean_scale(value: object, bounds: Tuple[float, float]) -> Optional[float]:
     """Validates one of the synthesis knobs (`speed`, `variation`,
     `rhythm`): a float, clamped into `bounds`. Missing or non-numeric yields
@@ -171,6 +188,7 @@ def build_msg(
     speed: object = None,
     variation: object = None,
     rhythm: object = None,
+    prepare: object = None,
 ) -> Msg:
     """Builds a validated Msg from already-typed fields (as opposed to
     `parse`, which extracts them from a raw body + tags) -- used by the
@@ -182,6 +200,7 @@ def build_msg(
         speed=clean_scale(speed, SPEED_RANGE),
         variation=clean_scale(variation, VARIATION_RANGE),
         rhythm=clean_scale(rhythm, RHYTHM_RANGE),
+        prepare=_clean_flag(prepare),
     )
 
 
@@ -217,8 +236,8 @@ def parse(body: str, tags: Optional[Iterable[str]] = None) -> Envelope:
     arbitrary custom HTTP headers to subscribers -- `tags` is one of the few
     fields that does survive.
 
-    Recognized keys: `voice`, `repeat`, `speed`, `variation` and `rhythm`
-    (see build_msg), and `replay` (a history index to replay instead of
+    Recognized keys: `voice`, `repeat`, `speed`, `variation`, `rhythm` and
+    `prepare` (see build_msg), and `replay` (a history index to replay instead of
     speaking `body`, see build_repeat). Content longer than
     MAX_CONTENT_BYTES is truncated -- this is meant to be read aloud, not
     archived.
@@ -235,6 +254,7 @@ def parse(body: str, tags: Optional[Iterable[str]] = None) -> Envelope:
         speed=params.get("speed"),
         variation=params.get("variation"),
         rhythm=params.get("rhythm"),
+        prepare=params.get("prepare"),
     )
 
 

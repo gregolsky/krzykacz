@@ -13,6 +13,7 @@ AUTH_TOKEN="${KRZYKACZ_AUTH_TOKEN:-}"
 ACTION=""
 VOICE=""
 REPEAT=""
+PREPARE=""
 EFFECTS=()
 
 usage() {
@@ -27,6 +28,8 @@ Options:
   --repeat N      speak the message N times, separated by "Powtarzam!" (capped at 10)
   --effect FILE   play a sound effect from KRZYKACZ_ASSETS_DIR before speaking;
                    repeat the flag to play several, in order, before the message
+  --prepare       render the message into krzykacz's audio cache without playing
+                   it; sending the same message again later then plays at once
   --mute          silence krzykacz: refuse new messages, drop the queue, and stop
                    the one playing after its current sound or sentence
   --unmute        let krzykacz speak again
@@ -38,6 +41,7 @@ Examples:
   $(basename "$0") "Backup finished"
   $(basename "$0") --voice justyna --repeat 2 "Tests failed"
   $(basename "$0") --effect game_over "Something broke"
+  $(basename "$0") --prepare --voice justyna "Obiad gotowy"   # silent, later plays at once
   $(basename "$0") --effect fight --effect game_over "Multiple sounds, then speech"
   $(basename "$0") --topic other-topic "Hello from another topic"
   $(basename "$0") --http http://krzykacz.local:8123 --mute
@@ -65,6 +69,10 @@ while [ $# -gt 0 ]; do
         --effect)
             EFFECTS+=("${2:?--effect requires a value}")
             shift 2
+            ;;
+        --prepare)
+            PREPARE="1"
+            shift
             ;;
         --mute)
             ACTION="mute"
@@ -138,6 +146,9 @@ if [ -n "$VOICE" ]; then
 fi
 if [ -n "$REPEAT" ]; then
     TAGS="${TAGS:+$TAGS,}repeat=$REPEAT"
+fi
+if [ -n "$PREPARE" ]; then
+    TAGS="${TAGS:+$TAGS,}prepare=1"
 fi
 
 if [ -n "$TAGS" ]; then

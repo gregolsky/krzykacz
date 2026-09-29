@@ -128,7 +128,15 @@ def _serialize_envelope(envelope: Optional[Envelope]) -> Optional[Dict[str, obje
         return None
     if isinstance(envelope, Repeat):
         return {"replay": envelope.number}
-    return {"content": envelope.content, "voice": envelope.voice, "repeat": envelope.repeat_count}
+    view: Dict[str, object] = {
+        "content": envelope.content,
+        "voice": envelope.voice,
+        "repeat": envelope.repeat_count,
+    }
+    # Only when set, so an ordinary message keeps the shape clients already parse.
+    if envelope.prepare:
+        view["prepare"] = True
+    return view
 
 
 def describe_queue(snapshot: Callable[[], Dict[str, object]]) -> Dict[str, object]:

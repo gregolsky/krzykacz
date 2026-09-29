@@ -849,3 +849,68 @@ def test_mute_arriving_during_rendering_plays_nothing_and_leaves_the_light_alone
 
     assert tts.played == []
     assert light.calls == []
+
+
+def test_prepared_message_is_rendered_but_not_played_and_leaves_the_light_alone(tmp_path):
+    light = FakeLight()
+    tts = FakeTts()
+    effects = FakeEffects()
+    (tmp_path / "ding").write_bytes(b"")
+    announcer = make_announcer(tmp_path, light=light, tts=tts, effects=effects)
+    announcer.start()
+
+    announcer.submit(Msg(content="<ding> Uwaga, obiad", prepare=True))
+    drain(announcer)
+
+    assert tts.synthesized == ["Uwaga, obiad."]
+    assert tts.played == []
+    assert effects.play_pcm_calls == []
+    assert light.calls == []
+
+
+def test_prepared_message_is_not_added_to_replay_history(tmp_path):
+    tts = FakeTts()
+    announcer = make_announcer(tmp_path, tts=tts)
+    announcer.start()
+
+    announcer.submit(Msg(content="slyszana"))
+    announcer.submit(Msg(content="przygotowana", prepare=True))
+    announcer.submit(Repeat(number=-1))
+    drain(announcer)
+
+    # replay=-1 still means the last message someone actually heard.
+    assert tts.played == [b"slyszana.", b"slyszana."]
+
+
+def test_sending_a_prepared_message_again_plays_it_from_the_cache(tmp_path):
+    inner = FakeTts()
+    cached = CachedTts(inner, str(tmp_path / "cache"), ttl_s=3600, max_bytes=10_000_000)
+    light = FakeLight()
+    announcer = make_announcer(tmp_path, light=light, tts=cached)
+    announcer.start()
+
+    announcer.submit(Msg(content="Uwaga, obiad", voice="justyna", prepare=True))
+    drain(announcer)
+    assert inner.synthesized == ["Uwaga, obiad."]
+    assert inner.played == []
+
+    announcer.submit(Msg(content="Uwaga, obiad", voice="justyna"))
+    drain(announcer)
+
+    # Played without a second synthesis: the prepared render was the cache entry.
+    assert inner.synthesized == ["Uwaga, obiad."]
+    assert inner.played == [b"Uwaga, obiad."]
+    assert light.calls == ["on", "off", "on", "off"]
+
+
+def test_a_prepared_message_only_matches_the_same_voice(tmp_path):
+    inner = FakeTts()
+    cached = CachedTts(inner, str(tmp_path / "cache"), ttl_s=3600, max_bytes=10_000_000)
+    announcer = make_announcer(tmp_path, tts=cached)
+    announcer.start()
+
+    announcer.submit(Msg(content="Uwaga, obiad", voice="justyna", prepare=True))
+    announcer.submit(Msg(content="Uwaga, obiad", voice="gosia"))
+    drain(announcer)
+
+    assert inner.said_with_voice == [("Uwaga, obiad.", "justyna"), ("Uwaga, obiad.", "gosia")]
