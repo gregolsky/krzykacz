@@ -6,11 +6,13 @@ from krzykacz.protocol import (
     RHYTHM_RANGE,
     SPEED_RANGE,
     VARIATION_RANGE,
+    Command,
     Effect,
     Msg,
     Repeat,
     Speech,
     parse,
+    parse_command,
     parse_tags,
     split_segments,
 )
@@ -302,3 +304,24 @@ def test_repeat_tag_non_numeric_falls_back_to_one():
 
 def test_plain_text_has_default_repeat_count():
     assert parse("zwykly tekst").repeat_count == 1
+
+
+def test_parse_command_is_none_for_an_ordinary_message():
+    assert parse_command(["voice=justyna"]) is None
+    assert parse_command(None) is None
+
+
+def test_parse_command_mute_on_and_off():
+    for value in ("1", "true", "YES", "on"):
+        assert parse_command([f"mute={value}"]) == Command(mute=True), value
+    for value in ("0", "false", "no", "OFF"):
+        assert parse_command([f"mute={value}"]) == Command(mute=False), value
+
+
+def test_parse_command_unparseable_mute_leaves_mute_unset():
+    assert parse_command(["mute=maybe"]) == Command()
+
+
+def test_parse_command_status_request():
+    assert parse_command(["status=1"]) == Command(status=True)
+    assert parse_command(["status=1", "mute=1"]) == Command(mute=True, status=True)

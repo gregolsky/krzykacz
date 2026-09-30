@@ -130,3 +130,24 @@ def test_from_env_reads_espeak_voices(monkeypatch):
     monkeypatch.setenv("KRZYKACZ_ESPEAK_VOICES", "x=pl+m1")
 
     assert Config.from_env().espeak_voices == {"x": "pl+m1"}
+
+
+def test_from_env_status_topic_is_off_by_default(monkeypatch):
+    monkeypatch.setenv("KRZYKACZ_TOPIC", "test")
+    monkeypatch.delenv("KRZYKACZ_STATUS_TOPIC", raising=False)
+
+    assert Config.from_env().status_topic is None
+
+
+def test_from_env_reads_the_status_topic(monkeypatch):
+    monkeypatch.setenv("KRZYKACZ_TOPIC", "test")
+    monkeypatch.setenv("KRZYKACZ_STATUS_TOPIC", "test-status")
+
+    assert Config.from_env().status_topic == "test-status"
+
+
+def test_from_env_empty_status_topic_means_off(monkeypatch):
+    monkeypatch.setenv("KRZYKACZ_TOPIC", "test")
+    monkeypatch.setenv("KRZYKACZ_STATUS_TOPIC", "")
+
+    assert Config.from_env().status_topic is None

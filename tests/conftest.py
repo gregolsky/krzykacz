@@ -32,6 +32,7 @@ def make_config(**overrides):
     defaults = dict(
         ntfy_server="https://ntfy.sh",
         topic="test",
+        status_topic=None,
         light_backend="null",
         uhubctl_location="1-1",
         uhubctl_port="2",

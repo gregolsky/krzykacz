@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Sends a message to a krzykacz instance via ntfy, or mutes/unmutes it over its
-# HTTP API.
+# Sends a message to a krzykacz instance via ntfy, or mutes/unmutes it -- over
+# its HTTP API when --http / KRZYKACZ_HTTP_URL is given, otherwise via ntfy.
 #
 # Usage: krzykacz.sh [options] "message"
 #        krzykacz.sh --mute | --unmute
@@ -31,7 +31,8 @@ Options:
                    the one playing after its current sound or sentence
   --unmute        let krzykacz speak again
   --http URL      HTTP API base URL for --mute/--unmute, e.g. http://krzykacz.local:8123
-                   (default: \$KRZYKACZ_HTTP_URL; bearer token from \$KRZYKACZ_AUTH_TOKEN)
+                   (default: \$KRZYKACZ_HTTP_URL; bearer token from \$KRZYKACZ_AUTH_TOKEN);
+                   without one, --mute/--unmute go over ntfy (Tags: mute=1 / mute=0)
   -h, --help      show this help
 
 Examples:
@@ -97,11 +98,19 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-if [ -n "$ACTION" ]; then
-    if [ -z "$HTTP_URL" ]; then
-        echo "Error: no HTTP URL given (use --http or set KRZYKACZ_HTTP_URL)" >&2
+if [ -n "$ACTION" ] && [ -z "$HTTP_URL" ]; then
+    # No HTTP API in reach: krzykacz also takes mute over ntfy.
+    if [ -z "$TOPIC" ]; then
+        echo "Error: no HTTP URL or topic given (use --http, or --topic / KRZYKACZ_TOPIC)" >&2
         exit 1
     fi
+    if [ "$ACTION" = "mute" ]; then MUTE_VALUE=1; else MUTE_VALUE=0; fi
+    curl -fsS -X POST -H "Tags: mute=$MUTE_VALUE" "$SERVER/$TOPIC"
+    echo
+    exit 0
+fi
+
+if [ -n "$ACTION" ]; then
     auth=()
     if [ -n "$AUTH_TOKEN" ]; then
         auth=(-H "Authorization: Bearer $AUTH_TOKEN")

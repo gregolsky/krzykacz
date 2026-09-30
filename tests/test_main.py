@@ -1,7 +1,8 @@
 import pytest
-from conftest import make_config
+from conftest import FakeAnnouncer, make_config
 
-from krzykacz.__main__ import build_tts, voice_names
+from krzykacz.__main__ import build_tts, handle_command, voice_names
+from krzykacz.protocol import Command
 from krzykacz.tts import CachedTts, EspeakTts, PiperTts, Prosody, RoutedTts
 
 
@@ -71,3 +72,34 @@ def test_voice_names_under_espeak_backend_defaults_to_the_language_code():
 
     assert names == ["pl", "espeak_male"]
     assert default == "pl"
+
+
+class FakePublisher:
+    def __init__(self):
+        self.requests = 0
+
+    def request(self):
+        self.requests += 1
+
+
+def test_handle_command_mutes_and_unmutes_through_control():
+    announcer = FakeAnnouncer()
+
+    handle_command(Command(mute=True), announcer.control, None)
+    assert announcer.muted is True
+    handle_command(Command(mute=False), announcer.control, None)
+    assert announcer.muted is False
+
+
+def test_handle_command_status_asks_the_publisher():
+    announcer = FakeAnnouncer()
+    publisher = FakePublisher()
+
+    handle_command(Command(status=True), announcer.control, publisher)
+
+    assert publisher.requests == 1
+    assert announcer.muted is False
+
+
+def test_handle_command_status_without_a_status_topic_is_a_no_op():
+    handle_command(Command(status=True), FakeAnnouncer().control, None)
