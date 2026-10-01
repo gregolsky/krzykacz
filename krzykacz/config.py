@@ -81,6 +81,8 @@ def _parse_espeak_voices(raw: Optional[str]) -> Dict[str, str]:
 class Config:
     ntfy_server: str
     topic: str
+    # Second ntfy topic the queue status is published to; None = don't publish.
+    status_topic: Optional[str]
 
     light_backend: str
     uhubctl_location: str
@@ -130,6 +132,7 @@ class Config:
         return cls(
             ntfy_server=_env("KRZYKACZ_NTFY_SERVER", "https://ntfy.sh"),
             topic=topic,
+            status_topic=_env("KRZYKACZ_STATUS_TOPIC") or None,
             light_backend=_env("KRZYKACZ_LIGHT", "uhubctl"),
             uhubctl_location=_env("KRZYKACZ_UHUBCTL_LOC", "1-1"),
             uhubctl_port=_env("KRZYKACZ_UHUBCTL_PORT", "2"),

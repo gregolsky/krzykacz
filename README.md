@@ -24,6 +24,8 @@ Recognized keys:
 | `speed=<x>` | tempo, `1.0` = normal, `1.5` = half again as fast, `0.7` = slower (clamped to 0.5–2.0) |
 | `variation=<x>` | how far the voice strays from its average -- pitch/timbre wobble. Piper's default is ~`0.667`; lower is flatter and more monotone, higher is livelier but can wobble (clamped to 0.0–1.5) |
 | `rhythm=<x>` | how far per-syllable timing strays from the predicted durations. Piper's default is ~`0.8` (clamped to 0.0–1.5) |
+| `mute=1` / `mute=0` | mute or unmute instead of speaking -- see "Control and status over ntfy" below; the body is ignored |
+| `status=1` | publish the queue status to the status topic now -- see "Control and status over ntfy" below; the body is ignored |
 | `prepare=1` | render the audio into the cache without playing it or touching the light -- see "Preparing a message" below |
 
 Tags without `=` (ntfy also uses tags for plain emoji/text markers) and
@@ -152,6 +154,39 @@ export KRZYKACZ_TOPIC=<your-topic>
 ```
 
 Run `./scripts/krzykacz.sh --help` for the full flag list.
+
+## Control and status over ntfy 🛰️
+
+The HTTP and MCP endpoints below only reach krzykacz's own network. Two
+things also work over ntfy, from anywhere:
+
+**Mute.** A message tagged `mute=1` mutes krzykacz and `mute=0` unmutes it --
+the same mute as `POST /v1/mute` (see below). The body is ignored; send an
+empty one. ntfy fills an empty body with the text `triggered`, so a message
+carrying a `mute` or `status` tag is never read aloud, whatever its body:
+
+```bash
+curl -X POST -H "Tags: mute=1" https://ntfy.sh/<your-topic>
+curl -X POST -H "Tags: mute=0" https://ntfy.sh/<your-topic>
+```
+
+**Status.** With `KRZYKACZ_STATUS_TOPIC` set, krzykacz publishes the queue
+view -- the same JSON as `GET /v1/queue` -- to that second topic: once at
+startup, then whenever it changes (a message queued, started or finished, mute
+switched), at most once every 2 seconds. `status=1` asks for a publish right
+away even if nothing changed. A client reads the most recent one with
+`since=latest`:
+
+```bash
+curl -X POST -H "Tags: status=1" https://ntfy.sh/<your-topic>
+curl -s "https://ntfy.sh/<your-status-topic>/json?poll=1&since=latest"
+```
+
+Both follow ntfy's trust model: the topic name is the only secret. Anyone who
+knows `<your-topic>` can already make krzykacz speak, and can now also mute it;
+anyone who knows the status topic can read what's queued. Pick
+hard-to-guess names on a public server. A failed status publish is logged and
+retried, never fatal.
 
 ## HTTP and MCP endpoints 🌐
 
@@ -435,6 +470,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 |---|---|---|
 | `KRZYKACZ_TOPIC` | *(required)* | ntfy topic name |
 | `KRZYKACZ_NTFY_SERVER` | `https://ntfy.sh` | ntfy server |
+| `KRZYKACZ_STATUS_TOPIC` | *(unset)* | second ntfy topic to publish the queue status to (see "Control and status over ntfy"); unset = off |
 | `KRZYKACZ_LIGHT` | `uhubctl` | `uhubctl` or `null` |
 | `KRZYKACZ_UHUBCTL_LOC` | `1-1` | USB hub location |
 | `KRZYKACZ_UHUBCTL_PORT` | `2` | port number |

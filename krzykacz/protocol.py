@@ -72,6 +72,17 @@ Envelope = Union[Msg, Repeat]
 
 
 @dataclass(frozen=True)
+class Command:
+    """A control request that arrived over ntfy rather than something to
+    say -- see parse_command. `mute` is None when the request doesn't touch
+    mute; `status` asks for the current queue status to be published (see
+    krzykacz.status.StatusPublisher)."""
+
+    mute: Optional[bool] = None
+    status: bool = False
+
+
+@dataclass(frozen=True)
 class Effect:
     """One sound-effect tag from message content, e.g. "<footstep*3>" ->
     Effect(name="footstep", count=3). `name` is a bare filename (see
@@ -210,6 +221,33 @@ def build_repeat(number: object) -> Repeat:
     except (TypeError, ValueError):
         number = -1
     return Repeat(number=number)
+
+
+_TRUE_VALUES = ("1", "true", "yes", "on")
+_FALSE_VALUES = ("0", "false", "no", "off")
+
+
+def parse_command(tags: Optional[Iterable[str]]) -> Optional[Command]:
+    """Returns the control request carried by `tags`, or None if they don't
+    carry one (an ordinary message or replay). Recognized keys: `mute`
+    (`mute=1` silences, `mute=0` unmutes, the usual true/false spellings
+    accepted) and `status` (`status=1` requests a status publish).
+
+    A request is recognized by its key alone, so a message tagged `mute=...`
+    is never spoken, whatever its body -- that matters because ntfy fills an
+    empty body with the literal text "triggered". An unparseable value
+    (`mute=maybe`) leaves that part of the request unset rather than
+    guessing, the same never-guess stance as the rest of this module."""
+    params = parse_tags(tags)
+    if "mute" not in params and "status" not in params:
+        return None
+    mute_value = params.get("mute", "").lower()
+    mute: Optional[bool] = None
+    if mute_value in _TRUE_VALUES:
+        mute = True
+    elif mute_value in _FALSE_VALUES:
+        mute = False
+    return Command(mute=mute, status=params.get("status", "").lower() in _TRUE_VALUES)
 
 
 def parse_tags(tags: Optional[Iterable[str]]) -> Dict[str, str]:

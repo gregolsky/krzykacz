@@ -4,17 +4,27 @@ import functools
 import logging
 import random
 import threading
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from .announcer import Announcer
+from .audit import log_call
 from .config import Config
 from .effects import Effects, FfmpegEffects, NullEffects
 from .http_server import build_http_server
 from .light import Light, NullLight, UhubctlLight
-from .metadata import Control, Describers, describe_effects, describe_limits, describe_voices
+from .metadata import (
+    Control,
+    Describers,
+    describe_effects,
+    describe_limits,
+    describe_queue,
+    describe_voices,
+)
 from .ntfy import listen
+from .protocol import Command
 from .random_picks import INTENSITIES, STYLES, Pickers, random_curse_msg, random_sound_msg
 from .ratelimit import IpRateLimiter
+from .status import StatusPublisher
 from .tts import CachedTts, EspeakTts, PiperTts, RoutedTts, Tts
 
 logger = logging.getLogger(__name__)
@@ -80,6 +90,21 @@ def build_effects(cfg: Config) -> Effects:
     if cfg.effects_backend == "null":
         return NullEffects()
     raise ValueError(f"Unknown KRZYKACZ_EFFECTS backend: {cfg.effects_backend!r}")
+
+
+def handle_command(
+    command: Command, control: Control, publisher: Optional[StatusPublisher]
+) -> None:
+    """Applies a control request that arrived over ntfy (see
+    protocol.parse_command). Mute goes through the same Control the HTTP/MCP
+    endpoints use; a status request is a no-op without a status topic."""
+    if command.mute is not None:
+        control.set_muted(command.mute)
+        log_call("ntfy.set_mute", "ntfy", muted=command.mute)
+    if command.status:
+        log_call("ntfy.status", "ntfy", enabled=publisher is not None)
+        if publisher is not None:
+            publisher.request()
 
 
 def main() -> None:
@@ -164,6 +189,14 @@ def main() -> None:
         )
         logger.info("Starting MCP endpoint on %s:%d", cfg.mcp_host, cfg.mcp_port)
 
+    publisher: Optional[StatusPublisher] = None
+    if cfg.status_topic:
+        publisher = StatusPublisher(
+            cfg.ntfy_server, cfg.status_topic, functools.partial(describe_queue, control.snapshot)
+        )
+        publisher.start()
+        logger.info("Publishing queue status to ntfy topic %s", cfg.status_topic)
+
     logger.info(
         "krzykacz starting: server=%s topic=%s light=%s tts=%s (voices=%s, default=%s) "
         "effects=%s assets_dir=%s",
@@ -177,7 +210,12 @@ def main() -> None:
         cfg.assets_dir,
     )
 
-    listen(cfg.ntfy_server, cfg.topic, announcer.submit)
+    listen(
+        cfg.ntfy_server,
+        cfg.topic,
+        announcer.submit,
+        functools.partial(handle_command, control=control, publisher=publisher),
+    )
 
 
 if __name__ == "__main__":
