@@ -26,6 +26,7 @@ Recognized keys:
 | `rhythm=<x>` | how far per-syllable timing strays from the predicted durations. Piper's default is ~`0.8` (clamped to 0.0–1.5) |
 | `mute=1` / `mute=0` | mute or unmute instead of speaking -- see "Control and status over ntfy" below; the body is ignored |
 | `status=1` | publish the queue status to the status topic now -- see "Control and status over ntfy" below; the body is ignored |
+| `prepare=1` | render the audio into the cache without playing it or touching the light -- see "Preparing a message" below |
 
 Tags without `=` (ntfy also uses tags for plain emoji/text markers) and
 unrecognized keys are ignored. A body with no `Tags` header at all is spoken
@@ -147,6 +148,7 @@ export KRZYKACZ_TOPIC=<your-topic>
 ./scripts/krzykacz.sh "Backup finished"
 ./scripts/krzykacz.sh --voice justyna --repeat 2 "Tests failed"
 ./scripts/krzykacz.sh --effect game_over "Something broke"
+./scripts/krzykacz.sh --prepare --voice justyna "Obiad gotowy"   # silent; the same message later plays at once
 ./scripts/krzykacz.sh --effect fight --effect game_over "Multiple sounds, then speech"
 ./scripts/krzykacz.sh --topic other-topic --server https://ntfy.example.com "Hello"
 ```
@@ -294,7 +296,8 @@ curl -H "Authorization: Bearer <token>" http://192.168.1.50:8123/v1/queue
 ```
 
 `playing` is `null` when the announcer is idle. A queued `replay` request
-serializes as `{"replay": -1}` instead of `content`/`voice`/`repeat`.
+serializes as `{"replay": -1}` instead of `content`/`voice`/`repeat`, and a
+`prepare` message carries an extra `"prepare": true`.
 `muted` is whether the box is currently muted (see below).
 
 #### `POST /v1/mute` and `POST /v1/unmute`
@@ -387,7 +390,7 @@ curl -H "Authorization: Bearer <token>" http://192.168.1.50:8123/v1/limits
 Set `KRZYKACZ_MCP_ENABLED=1`. Exposes an MCP server over Streamable HTTP at
 `http://<host>:8124/mcp`, with four tools that trigger the light/speaker:
 
-- `send_message(content, voice=None, repeat=None, speed=None, variation=None, rhythm=None)` -- speak new text
+- `send_message(content, voice=None, repeat=None, speed=None, variation=None, rhythm=None, prepare=None)` -- speak new text, or with `prepare=True` only render it into the cache (see "Preparing a message")
 - `play_recent_message(number=-1)` -- replay one of the last few messages
   instead of resubmitting its text
 - `random_sound()` -- play one random sound from the curated soundboard, no
@@ -519,6 +522,33 @@ Every write and read failure (full disk, missing directory, permissions) is
 logged and falls back to synthesizing directly -- a broken cache degrades
 speed, never breaks playback. The directory can be deleted at any time; it's
 rebuilt on demand. Set `KRZYKACZ_CACHE_TTL=0` to disable caching altogether.
+
+### Preparing a message ⏱️
+
+A message sent with `prepare=1` (ntfy/HTTP tag) or `prepare=True` (MCP) is
+rendered exactly as it would be for playback -- then nothing is played, the
+light stays off, and it isn't added to the `replay` history, since nobody
+heard it. What's left is the synthesized speech in the cache, so sending the
+**identical** message later (same body, `voice` and `speed`/`variation`/`rhythm`,
+without `prepare`) skips synthesis and starts speaking right away:
+
+```bash
+# ahead of time -- silent, takes as long as synthesis does
+curl -H "Tags: voice=justyna,prepare=1" -d "Uwaga, obiad gotowy" https://ntfy.sh/<your-topic>
+# later -- a cache hit, plays immediately
+curl -H "Tags: voice=justyna" -d "Uwaga, obiad gotowy" https://ntfy.sh/<your-topic>
+```
+
+On the concatenating backends (see below) `repeat` doesn't have to match
+either: a repeated playback is joined from the cached body, plus
+`" Powtarzam! "`, which is only rendered when a message repeats -- prepare
+with the `repeat` you'll play with to have that in the cache too. Effect tags don't need preparing -- they're decoded,
+not synthesized, and only speech is cached. A prepared entry is an ordinary
+cache entry: it expires `KRZYKACZ_CACHE_TTL` after it was rendered and can be
+evicted by the size cap like any other, and with `KRZYKACZ_CACHE_TTL=0`
+`prepare` renders for nothing. Preparing also occupies the announcer's single
+worker for the duration of the synthesis, so messages queued behind it wait,
+the same as behind a message being spoken.
 
 `repeat` gets a related optimization on Piper and on the espeak-ng voices (both
 produce headerless PCM at the same rate, which concatenates cleanly): the message and `" Powtarzam! "` are each synthesized once and the

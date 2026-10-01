@@ -34,6 +34,14 @@ def test_submit_message_defaults_to_none_voice_and_repeat():
     assert announcer.submitted == [Msg(content="hello")]
 
 
+def test_submit_message_forwards_prepare():
+    announcer = FakeAnnouncer()
+
+    _submit_message(announcer.submit, "hello", "justyna", None, prepare=True)
+
+    assert announcer.submitted == [Msg(content="hello", voice="justyna", prepare=True)]
+
+
 def test_submit_message_forwards_announcer_result():
     announcer = FakeAnnouncer(accept=False)
 
