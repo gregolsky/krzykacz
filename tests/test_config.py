@@ -1,3 +1,4 @@
+import pytest
 from conftest import make_config
 
 from krzykacz.config import DEFAULT_ESPEAK_VOICES, Config, _parse_espeak_voices, _parse_voices
@@ -130,3 +131,23 @@ def test_from_env_reads_espeak_voices(monkeypatch):
     monkeypatch.setenv("KRZYKACZ_ESPEAK_VOICES", "x=pl+m1")
 
     assert Config.from_env().espeak_voices == {"x": "pl+m1"}
+
+
+@pytest.mark.parametrize("endpoint", ["KRZYKACZ_HTTP_ENABLED", "KRZYKACZ_MCP_ENABLED"])
+def test_from_env_refuses_an_endpoint_without_a_token(monkeypatch, endpoint):
+    monkeypatch.setenv("KRZYKACZ_TOPIC", "test")
+    monkeypatch.setenv(endpoint, "1")
+    monkeypatch.delenv("KRZYKACZ_AUTH_TOKEN", raising=False)
+
+    with pytest.raises(RuntimeError, match="KRZYKACZ_AUTH_TOKEN"):
+        Config.from_env()
+
+
+def test_from_env_accepts_an_endpoint_with_a_token(monkeypatch):
+    monkeypatch.setenv("KRZYKACZ_TOPIC", "test")
+    monkeypatch.setenv("KRZYKACZ_HTTP_ENABLED", "1")
+    monkeypatch.setenv("KRZYKACZ_AUTH_TOKEN", "sekret")
+
+    cfg = Config.from_env()
+
+    assert (cfg.http_enabled, cfg.auth_token) == (True, "sekret")

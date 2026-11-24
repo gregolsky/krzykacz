@@ -161,11 +161,11 @@ existing process.
 
 ### Auth
 
-Both endpoints are open by default, same trust model as ntfy (the topic
-name is the only secret there). Set `KRZYKACZ_AUTH_TOKEN` to require a
-bearer token (`Authorization: Bearer <token>`) on every request to either
-endpoint -- the examples below include it; drop the header if you haven't
-set a token.
+Both endpoints listen on the network, so they require a bearer token:
+krzykacz refuses to start with `KRZYKACZ_HTTP_ENABLED` or
+`KRZYKACZ_MCP_ENABLED` set but no `KRZYKACZ_AUTH_TOKEN`. Every request must
+carry `Authorization: Bearer <token>`. The token travels in plain HTTP, so
+keep the ports on a network you trust.
 
 ### Rate limiting and audit logging
 
@@ -458,7 +458,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 | `KRZYKACZ_MCP_ENABLED` | `0` | set to `1` to enable the MCP endpoint (requires `pip install mcp`, Python >= 3.10) |
 | `KRZYKACZ_MCP_HOST` | `0.0.0.0` | MCP endpoint bind address |
 | `KRZYKACZ_MCP_PORT` | `8124` | MCP endpoint port |
-| `KRZYKACZ_AUTH_TOKEN` | *(unset = no auth)* | bearer token required by the HTTP and MCP endpoints when set |
+| `KRZYKACZ_AUTH_TOKEN` | *(unset)* | bearer token required by the HTTP and MCP endpoints; mandatory when either is enabled |
 | `KRZYKACZ_RATE_LIMIT_INTERVAL` | `10` | seconds between calls that trigger the light/speaker, per source IP; shared by HTTP and MCP; `0` disables it |
 | `KRZYKACZ_CACHE_DIR` | `/var/cache/krzykacz` | where synthesized audio is cached (see "Audio cache" below) |
 | `KRZYKACZ_CACHE_TTL` | `86400` (24h) | seconds a cache entry stays valid; `0` disables caching entirely |

@@ -127,6 +127,16 @@ class Config:
         if not topic:
             raise RuntimeError("KRZYKACZ_TOPIC is required")
 
+        http_enabled = _env_bool("KRZYKACZ_HTTP_ENABLED")
+        mcp_enabled = _env_bool("KRZYKACZ_MCP_ENABLED")
+        auth_token = _env("KRZYKACZ_AUTH_TOKEN") or None
+        # The endpoints listen on the network; without a token anyone who can
+        # reach the port can make the speaker talk or mute it.
+        if (http_enabled or mcp_enabled) and not auth_token:
+            raise RuntimeError(
+                "KRZYKACZ_HTTP_ENABLED/KRZYKACZ_MCP_ENABLED require KRZYKACZ_AUTH_TOKEN"
+            )
+
         return cls(
             ntfy_server=_env("KRZYKACZ_NTFY_SERVER", "https://ntfy.sh"),
             topic=topic,
@@ -157,12 +167,12 @@ class Config:
             cache_dir=_env("KRZYKACZ_CACHE_DIR", "/var/cache/krzykacz"),
             cache_ttl=float(_env("KRZYKACZ_CACHE_TTL", "86400")),
             cache_max_mb=int(_env("KRZYKACZ_CACHE_MAX_MB", "200")),
-            http_enabled=_env_bool("KRZYKACZ_HTTP_ENABLED"),
+            http_enabled=http_enabled,
             http_host=_env("KRZYKACZ_HTTP_HOST", "0.0.0.0"),
             http_port=int(_env("KRZYKACZ_HTTP_PORT", "8123")),
-            mcp_enabled=_env_bool("KRZYKACZ_MCP_ENABLED"),
+            mcp_enabled=mcp_enabled,
             mcp_host=_env("KRZYKACZ_MCP_HOST", "0.0.0.0"),
             mcp_port=int(_env("KRZYKACZ_MCP_PORT", "8124")),
-            auth_token=_env("KRZYKACZ_AUTH_TOKEN"),
+            auth_token=auth_token,
             rate_limit_interval=float(_env("KRZYKACZ_RATE_LIMIT_INTERVAL", "10")),
         )
