@@ -6,17 +6,12 @@ from krzykacz.tts import SWEEP_INTERVAL_S, CachedTts, EspeakTts, PiperTts, Proso
 class CountingTts(Tts):
     """Renders `text` as bytes and counts how often it was asked to."""
 
-    def __init__(self, print_name="counting", concatenable=False):
+    def __init__(self, print_name="counting"):
         self.calls = []
         self._print_name = print_name
-        self._concatenable = concatenable
 
     def fingerprint(self, voice=None):
         return f"{self._print_name}:{voice}"
-
-    @property
-    def concatenable(self):
-        return self._concatenable
 
     def synthesize(self, text, voice=None, prosody=Prosody()):
         self.calls.append((text, voice, prosody))
@@ -211,12 +206,11 @@ def test_sweep_is_rate_limited_between_writes(tmp_path):
     assert stale.name in [entry.name for entry in (tmp_path / "cache").iterdir()]
 
 
-def test_fingerprint_and_concatenable_are_delegated(tmp_path):
-    inner = CountingTts(print_name="inner", concatenable=True)
+def test_fingerprint_is_delegated(tmp_path):
+    inner = CountingTts(print_name="inner")
     cache = make_cache(tmp_path, inner)
 
     assert cache.fingerprint("justyna") == "inner:justyna"
-    assert cache.concatenable is True
 
 
 def test_play_is_delegated(tmp_path):

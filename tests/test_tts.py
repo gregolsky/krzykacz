@@ -196,12 +196,11 @@ def _capture_run(monkeypatch, stdout=b""):
     return captured
 
 
-def test_espeak_returns_headerless_pcm_and_is_concatenable(monkeypatch):
+def test_espeak_returns_headerless_pcm(monkeypatch):
     _capture_run(monkeypatch, stdout=_wav(b"\xaa\xbb"))
     tts = EspeakTts(voice="pl")
 
     assert tts.synthesize("hej") == b"\xaa\xbb"
-    assert tts.concatenable is True
 
 
 def test_espeak_sends_text_on_stdin_not_argv(monkeypatch):
@@ -308,12 +307,6 @@ def test_routed_fingerprint_follows_the_engine(monkeypatch):
 
     assert tts.fingerprint("espeak_male").startswith("espeak:")
     assert tts.fingerprint("darkman").startswith("piper:")
-
-
-def test_routed_is_concatenable(monkeypatch):
-    tts, _ = _routed(monkeypatch)
-
-    assert tts.concatenable is True
 
 
 def test_routed_piper_wins_a_name_collision(monkeypatch):

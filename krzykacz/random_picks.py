@@ -27,7 +27,7 @@ class Curse(NamedTuple):
 
 # Researched, not invented -- see the plan's Sources section for citations.
 # Every entry already ends in terminal punctuation (in
-# announcer._TERMINAL_PUNCTUATION), so announcer._with_terminal_punctuation
+# renderer.TERMINAL_PUNCTUATION), so renderer.with_terminal_punctuation
 # leaves it untouched and Piper keeps the exclamatory intonation.
 CURSES: Tuple[Curse, ...] = (
     # funny -- mild euphemisms, the "won't send you to hell" family

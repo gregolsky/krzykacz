@@ -119,14 +119,6 @@ class Tts(ABC):
         model or speaker, and an unknown name falls back to the default
         voice."""
 
-    @property
-    def concatenable(self) -> bool:
-        """Whether two `synthesize` results can be played back to back by
-        simply concatenating their bytes. True for a headerless stream (raw
-        PCM at a fixed rate), false for a format carrying a per-file header
-        (WAV: the joined bytes would announce only the first chunk's
-        length). Defaults to false -- a backend opts in."""
-        return False
 
 
 class VoiceSpec(NamedTuple):
@@ -186,10 +178,6 @@ class PiperTts(Tts):
         # KRZYKACZ_PIPER_SPEED must not serve entries rendered at the old one.
         return f"piper:{spec.model_path}:{spec.speaker}:{self.sample_rate}:{self.prosody}"
 
-    @property
-    def concatenable(self) -> bool:
-        # `piper --output-raw` is headerless PCM at a fixed rate.
-        return True
 
     def synthesize(
         self, text: str, voice: Optional[str] = None, prosody: Prosody = Prosody()
@@ -224,7 +212,7 @@ class PiperTts(Tts):
 class EspeakTts(Tts):
     """espeak-ng, rendered to the same headerless 22050 Hz mono PCM as
     PiperTts so the two can share one playback path and be freely
-    concatenated -- see RoutedTts.
+    concatenated.
 
     `voices` maps a wire name (`espeak_male`) to an espeak-ng voice spec
     (`pl+m3`: language plus a male/female/character variant). The mapping
@@ -283,9 +271,6 @@ class EspeakTts(Tts):
     def fingerprint(self, voice: Optional[str] = None) -> str:
         return f"espeak:{self._spec(voice)}:{self.SAMPLE_RATE}:{self.prosody}"
 
-    @property
-    def concatenable(self) -> bool:
-        return True
 
     def synthesize(
         self, text: str, voice: Optional[str] = None, prosody: Prosody = Prosody()
@@ -311,9 +296,9 @@ class RoutedTts(Tts):
     name, so both are ordinary `voice=` values.
 
     That only works because both engines emit the same thing -- headerless
-    S16_LE mono at one sample rate -- which is what lets `play` and
-    `concatenable` be answered once here, rather than per voice (`Tts.play`
-    isn't told which voice made the audio). A name in neither map falls to
+    S16_LE mono at one sample rate -- which is what lets `play` be answered
+    once here, rather than per voice (`Tts.play` isn't told which voice made
+    the audio), and what lets the renderer join any two results byte-wise. A name in neither map falls to
     Piper, which resolves it to its default voice as it always has. A name in
     both goes to Piper."""
 
@@ -336,9 +321,6 @@ class RoutedTts(Tts):
     def fingerprint(self, voice: Optional[str] = None) -> str:
         return self._route(voice).fingerprint(voice)
 
-    @property
-    def concatenable(self) -> bool:
-        return True
 
     def synthesize(
         self, text: str, voice: Optional[str] = None, prosody: Prosody = Prosody()
@@ -376,9 +358,6 @@ class CachedTts(Tts):
     def fingerprint(self, voice: Optional[str] = None) -> str:
         return self._inner.fingerprint(voice)
 
-    @property
-    def concatenable(self) -> bool:
-        return self._inner.concatenable
 
     def play(self, audio: bytes) -> None:
         self._inner.play(audio)

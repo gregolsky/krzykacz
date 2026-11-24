@@ -1,6 +1,7 @@
 import threading
 
-from krzykacz.announcer import NO_SUCH_MESSAGE, Announcer, _with_terminal_punctuation
+from krzykacz.announcer import NO_SUCH_MESSAGE, Announcer
+from krzykacz.renderer import with_terminal_punctuation
 from krzykacz.effects import Effects
 from krzykacz.light import Light
 from krzykacz.protocol import MAX_SPOKEN_BYTES, REPEAT_SEPARATOR, Msg, Repeat
@@ -24,8 +25,6 @@ class FakeLight(Light):
 
 
 class FakeTts(Tts):
-    # concatenable stays at the ABC's default (False), so these fakes
-    # exercise the joined-text repeat path. ConcatenatingFakeTts below opts in.
     def __init__(self, fail_on=None, events=None):
         self.said = []
         self.said_with_voice = []
@@ -53,15 +52,6 @@ class FakeTts(Tts):
         self.played.append(audio)
         if self.events is not None:
             self.events.append("tts.play")
-
-
-class ConcatenatingFakeTts(FakeTts):
-    """Stands in for a raw-PCM backend: its output can be joined, so the
-    announcer renders the body and the separator once each."""
-
-    @property
-    def concatenable(self):
-        return True
 
 
 class FakeEffects(Effects):
@@ -154,7 +144,7 @@ def test_repeat_out_of_range_speaks_fallback(tmp_path):
     announcer.submit(Repeat(number=-1))
     drain(announcer)
 
-    assert tts.said == [_with_terminal_punctuation(NO_SUCH_MESSAGE)]
+    assert tts.said == [with_terminal_punctuation(NO_SUCH_MESSAGE)]
 
 
 def test_queue_processes_in_fifo_order(tmp_path):
@@ -257,19 +247,8 @@ def test_no_voice_specified_passes_none(tmp_path):
     assert tts.said_with_voice == [("czesc.", None)]
 
 
-def test_repeat_count_joins_content_with_separator(tmp_path):
+def test_repeat_synthesizes_body_and_separator_once(tmp_path):
     tts = FakeTts()
-    announcer = make_announcer(tmp_path, tts=tts)
-    announcer.start()
-
-    announcer.submit(Msg(content="Testy padły", repeat_count=3))
-    drain(announcer)
-
-    assert tts.said == ["Testy padły. Powtarzam! Testy padły. Powtarzam! Testy padły."]
-
-
-def test_repeat_synthesizes_body_and_separator_once_on_a_concatenable_backend(tmp_path):
-    tts = ConcatenatingFakeTts()
     announcer = make_announcer(tmp_path, tts=tts)
     announcer.start()
 
@@ -283,8 +262,8 @@ def test_repeat_synthesizes_body_and_separator_once_on_a_concatenable_backend(tm
     assert tts.played == [body + separator + body + separator + body]
 
 
-def test_repeat_once_synthesizes_no_separator_on_a_concatenable_backend(tmp_path):
-    tts = ConcatenatingFakeTts()
+def test_repeat_once_synthesizes_no_separator(tmp_path):
+    tts = FakeTts()
     announcer = make_announcer(tmp_path, tts=tts)
     announcer.start()
 
@@ -295,7 +274,7 @@ def test_repeat_once_synthesizes_no_separator_on_a_concatenable_backend(tmp_path
 
 
 def test_concatenated_repeats_drop_whole_copies_to_stay_in_budget(tmp_path):
-    tts = ConcatenatingFakeTts()
+    tts = FakeTts()
     announcer = make_announcer(tmp_path, tts=tts)
     announcer.start()
 
@@ -333,7 +312,7 @@ def test_unset_knobs_stay_none_so_the_backend_keeps_its_defaults(tmp_path):
 
 
 def test_separator_is_rendered_with_the_same_knobs_as_the_body(tmp_path):
-    tts = ConcatenatingFakeTts()
+    tts = FakeTts()
     announcer = make_announcer(tmp_path, tts=tts)
     announcer.start()
 
@@ -344,14 +323,14 @@ def test_separator_is_rendered_with_the_same_knobs_as_the_body(tmp_path):
     assert tts.prosodies == [Prosody(speed=1.4), Prosody(speed=1.4)]
 
 
-def test_repeat_on_a_cached_concatenable_backend_caches_body_and_separator_separately(tmp_path):
+def test_repeat_on_a_cached_backend_caches_body_and_separator_separately(tmp_path):
     # Composition of two features: a repeat on a concatenable backend
     # synthesizes the body and the separator once each (see
     # test_repeat_synthesizes_body_and_separator_once_...), and CachedTts
     # caches per synthesize() call -- so each piece should land as its own
     # cache entry, and a second identical repeat should touch the wrapped
     # backend zero times, not twice.
-    inner = ConcatenatingFakeTts()
+    inner = FakeTts()
     cached = CachedTts(inner, str(tmp_path / "cache"), ttl_s=3600, max_bytes=10_000_000)
     announcer = make_announcer(tmp_path, tts=cached)
     announcer.start()
@@ -384,8 +363,7 @@ def test_repeat_count_default_speaks_once(tmp_path):
 
 
 def test_repeat_count_with_effect_tag_replays_the_whole_sequence(tmp_path):
-    # Approved behaviour: `repeat` now replays sounds and speech alike, not
-    # just the spoken part -- see krzykacz.announcer.Announcer._render_with_effects.
+    # `repeat` replays sounds and speech alike, not just the spoken part.
     (tmp_path / "boom.mp3").write_bytes(b"fake mp3")
     tts = FakeTts()
     effects = FakeEffects()
@@ -400,13 +378,12 @@ def test_repeat_count_with_effect_tag_replays_the_whole_sequence(tmp_path):
     assert effects.played == [tmp_path / "boom.mp3"]
     assert effects.play_pcm_calls == [b"pcm:boom.mp3", b"pcm:boom.mp3"]
     # Likewise the spoken body and the separator are each synthesized once
-    # and reused -- and the separator is the bare REPEAT_SEPARATOR constant,
-    # not a stripped/repunctuated variant, so it lands on the same CachedTts
-    # entry _synthesize_plain's separator does (see Announcer._render_separator).
+    # and reused -- the separator as the bare REPEAT_SEPARATOR constant, so
+    # every repeated message shares one CachedTts entry for it. Speech that
+    # ends up adjacent (body + separator) plays as one gapless chunk.
     assert tts.said == ["Testy padły.", REPEAT_SEPARATOR]
     assert tts.played == [
-        "Testy padły.".encode("utf-8"),
-        REPEAT_SEPARATOR.encode("utf-8"),
+        ("Testy padły." + REPEAT_SEPARATOR).encode("utf-8"),
         "Testy padły.".encode("utf-8"),
     ]
 
@@ -417,7 +394,7 @@ def test_effect_message_repeat_separator_reuses_a_plain_messages_cache_entry(tmp
     # repeated message warms the cache; a later interleaved one must hit it,
     # not mint its own differently-spelled entry.
     (tmp_path / "boom.mp3").write_bytes(b"fake mp3")
-    inner = ConcatenatingFakeTts()
+    inner = FakeTts()
     cached = CachedTts(inner, str(tmp_path / "cache"), ttl_s=3600, max_bytes=10_000_000)
     announcer = make_announcer(tmp_path, tts=cached, effects=FakeEffects())
     announcer.start()
@@ -456,21 +433,21 @@ def test_effect_path_traversal_is_rejected(tmp_path):
         outside.unlink(missing_ok=True)
 
 
-def test_with_terminal_punctuation_appends_dot_when_missing():
-    assert _with_terminal_punctuation("bez kropki") == "bez kropki."
+def testwith_terminal_punctuation_appends_dot_when_missing():
+    assert with_terminal_punctuation("bez kropki") == "bez kropki."
 
 
-def test_with_terminal_punctuation_leaves_existing_punctuation():
+def testwith_terminal_punctuation_leaves_existing_punctuation():
     for text in ("już jest.", "pytanie?", "krzyk!", "dwukropek:", "średnik;", "wielokropek…"):
-        assert _with_terminal_punctuation(text) == text
+        assert with_terminal_punctuation(text) == text
 
 
-def test_with_terminal_punctuation_empty_string_untouched():
-    assert _with_terminal_punctuation("") == ""
+def testwith_terminal_punctuation_empty_string_untouched():
+    assert with_terminal_punctuation("") == ""
 
 
-def test_with_terminal_punctuation_strips_trailing_whitespace_before_checking():
-    assert _with_terminal_punctuation("koniec.   ") == "koniec."
+def testwith_terminal_punctuation_strips_trailing_whitespace_before_checking():
+    assert with_terminal_punctuation("koniec.   ") == "koniec."
 
 
 def test_synthesis_happens_before_light_turns_on(tmp_path):
@@ -569,8 +546,11 @@ def test_repeat_count_is_truncated_to_max_spoken_bytes(tmp_path):
     announcer.submit(Msg(content="a" * 500, repeat_count=10))
     drain(announcer)
 
-    assert len(tts.said) == 1
-    assert len(tts.said[0].encode("utf-8")) <= MAX_SPOKEN_BYTES
+    # Spent in whole copies: three 501-byte copies plus two separators fit.
+    assert tts.said == ["a" * 500 + ".", REPEAT_SEPARATOR]
+    assert len(tts.played) == 1
+    assert tts.played[0] == REPEAT_SEPARATOR.encode("utf-8").join([("a" * 500 + ".").encode("utf-8")] * 3)
+    assert len(tts.played[0]) <= MAX_SPOKEN_BYTES
 
 
 def test_snapshot_shows_pending_and_playing_while_worker_is_blocked(tmp_path):
@@ -640,7 +620,7 @@ def test_adjacent_same_name_effect_tags_are_decoded_once_and_played_as_one_clip(
     # at the PCM level (one play_pcm call) is both cheaper and gapless
     # compared to one play() call per hit. Writing the tag out three times
     # rather than using "*3" should cost exactly the same: one decode, not
-    # three -- see Announcer._render_effect_run.
+    # three -- see Renderer.render's per-message decode cache.
     (tmp_path / "step.mp3").write_bytes(b"1")
     tts = FakeTts()
     effects = FakeEffects()
@@ -727,12 +707,10 @@ def test_effect_decode_failure_does_not_block_the_rest_of_the_message(tmp_path):
     assert tts.said == ["Uwaga.", "Teraz."]
 
 
-def test_no_effects_message_still_uses_the_single_synthesis_fast_path(tmp_path):
-    # A message with no tags at all must still go through the original
-    # single-Speech-segment path (_render_plain), not the general
-    # per-run renderer -- guards the repeat/cache optimizations above,
-    # which only hold for that fast path.
-    tts = ConcatenatingFakeTts()
+def test_no_effects_message_is_synthesized_in_one_call(tmp_path):
+    # A message with no tags is one Speech segment, so one synthesis --
+    # what the repeat/cache behaviour above relies on.
+    tts = FakeTts()
     announcer = make_announcer(tmp_path, tts=tts)
     announcer.start()
 
