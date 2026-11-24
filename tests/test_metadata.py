@@ -3,7 +3,6 @@ from krzykacz.metadata import (
     describe_limits,
     describe_queue,
     describe_voices,
-    list_effects,
 )
 from krzykacz.protocol import (
     MAX_CONTENT_BYTES,
@@ -19,22 +18,7 @@ from krzykacz.protocol import (
 from krzykacz.random_picks import INTENSITIES, STYLES
 
 
-def test_list_effects_returns_sorted_filenames(tmp_path):
-    (tmp_path / "zeta.ogg").write_bytes(b"x")
-    (tmp_path / "alpha.mp3").write_bytes(b"x")
 
-    assert list_effects(str(tmp_path)) == ["alpha.mp3", "zeta.ogg"]
-
-
-def test_list_effects_ignores_directories(tmp_path):
-    (tmp_path / "boom.ogg").write_bytes(b"x")
-    (tmp_path / "subdir").mkdir()
-
-    assert list_effects(str(tmp_path)) == ["boom.ogg"]
-
-
-def test_list_effects_missing_directory_is_empty(tmp_path):
-    assert list_effects(str(tmp_path / "nope")) == []
 
 
 def test_describe_voices_reports_backend_and_names():
@@ -69,7 +53,7 @@ def test_describe_effects_rereads_the_directory_on_each_call(tmp_path):
 
 
 def test_describe_limits_reports_protocol_and_instance_caps():
-    assert describe_limits(10, 5, 2.5, INTENSITIES, STYLES) == {
+    assert describe_limits(10, 5, 2.5) == {
         "max_content_bytes": MAX_CONTENT_BYTES,
         "max_spoken_bytes": MAX_SPOKEN_BYTES,
         "max_repeat": MAX_REPEAT_COUNT,
@@ -89,7 +73,7 @@ def test_describe_limits_reports_protocol_and_instance_caps():
 def test_describe_limits_ranges_are_json_friendly_lists():
     # They travel over HTTP as JSON; a tuple would serialize the same, but
     # asserting the type keeps the payload contract explicit.
-    limits = describe_limits(10, 5, 2.5, INTENSITIES, STYLES)
+    limits = describe_limits(10, 5, 2.5)
 
     assert isinstance(limits["speed_range"], list)
     assert limits["speed_range"] == [0.5, 2.0]
@@ -102,7 +86,7 @@ def test_the_three_views_do_not_overlap_in_keys():
     # shouldn't have to resolve a key collision between them.
     voices = describe_voices("piper", ["darkman"], "darkman")
     effects = describe_effects("/nonexistent")
-    limits = describe_limits(10, 5, 2.5, INTENSITIES, STYLES)
+    limits = describe_limits(10, 5, 2.5)
 
     assert set(voices) & set(effects) == set()
     assert set(voices) & set(limits) == set()

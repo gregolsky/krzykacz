@@ -8,6 +8,7 @@ from itertools import groupby
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
+from .assets import resolve_effect
 from .effects import Effects
 from .light import Light
 from .protocol import (
@@ -19,7 +20,7 @@ from .protocol import (
     Repeat,
     Segment,
     Speech,
-    _truncate,
+    truncate,
     preview,
     split_segments,
 )
@@ -46,8 +47,8 @@ PlaybackItem = Tuple[str, bytes]
 def _repeats_within_budget(per_copy_bytes: int, repeat_count: int) -> int:
     """How many copies of a per_copy_bytes-sized spoken chunk, joined by
     REPEAT_SEPARATOR, fit in MAX_SPOKEN_BYTES. Same budget the joined-text
-    path gets from _truncate, but spent in whole copies -- concatenated
-    audio can only be cut at a copy boundary, which beats _truncate's
+    path gets from truncate, but spent in whole copies -- concatenated
+    audio can only be cut at a copy boundary, which beats truncate's
     mid-word cut of the last one.
 
     per_copy_bytes is 0 for a pass with no spoken text at all (an
@@ -277,7 +278,7 @@ class Announcer:
             return self._tts.synthesize(spoken, voice, prosody)
 
         if not self._tts.concatenable:
-            joined = _truncate(REPEAT_SEPARATOR.join([spoken] * repeat_count), MAX_SPOKEN_BYTES)
+            joined = truncate(REPEAT_SEPARATOR.join([spoken] * repeat_count), MAX_SPOKEN_BYTES)
             return self._tts.synthesize(joined, voice, prosody)
 
         copies = _repeats_within_budget(len(spoken.encode("utf-8")), repeat_count)
@@ -402,7 +403,7 @@ class Announcer:
         """Resolves and decodes one effect by name, or None (logged) if it
         doesn't resolve to a file or fails to decode -- never raises, same
         skip-don't-fail stance as the rest of this module."""
-        path = self._resolve_effect(name)
+        path = resolve_effect(self._assets_dir, name)
         if path is None:
             logger.warning("Effect %r not found in %s, skipping", name, self._assets_dir)
             return None
@@ -421,7 +422,7 @@ class Announcer:
             return None
 
         if not self._tts.concatenable:
-            joined = _truncate(" ".join(texts), MAX_SPOKEN_BYTES)
+            joined = truncate(" ".join(texts), MAX_SPOKEN_BYTES)
             try:
                 return ("speech", self._tts.synthesize(joined, voice, prosody))
             except Exception:
@@ -437,14 +438,3 @@ class Announcer:
         if not parts:
             return None
         return ("speech", b"".join(parts))
-
-    def _resolve_effect(self, name: str) -> Optional[Path]:
-        candidate = (self._assets_dir / name).resolve()
-        try:
-            candidate.relative_to(self._assets_dir)
-        except ValueError:
-            logger.warning("Rejecting effect outside assets directory: %r", name)
-            return None
-        if not candidate.is_file():
-            return None
-        return candidate

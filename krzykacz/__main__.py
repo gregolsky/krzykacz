@@ -13,7 +13,7 @@ from .http_server import build_http_server
 from .light import Light, NullLight, UhubctlLight
 from .metadata import Control, Describers, describe_effects, describe_limits, describe_voices
 from .ntfy import listen
-from .random_picks import INTENSITIES, STYLES, Pickers, random_curse_msg, random_sound_msg
+from .random_picks import Pickers, random_curse_msg, random_sound_msg
 from .ratelimit import IpRateLimiter
 from .tts import CachedTts, EspeakTts, PiperTts, RoutedTts, Tts
 
@@ -107,12 +107,7 @@ def main() -> None:
     voices = functools.partial(describe_voices, cfg.tts_backend, voices_info, default_voice)
     effects_view = functools.partial(describe_effects, cfg.assets_dir)
     limits = functools.partial(
-        describe_limits,
-        cfg.history_size,
-        cfg.queue_size,
-        cfg.rate_limit_interval,
-        INTENSITIES,
-        STYLES,
+        describe_limits, cfg.history_size, cfg.queue_size, cfg.rate_limit_interval
     )
     describers = Describers(voices=voices, effects=effects_view, limits=limits)
     control = Control(

@@ -79,7 +79,7 @@ class Effect:
     """One sound-effect tag from message content, e.g. "<footstep*3>" ->
     Effect(name="footstep", count=3). `name` is a bare filename (see
     split_segments' validation) resolved against the assets directory by
-    Announcer._resolve_effect."""
+    krzykacz.assets.resolve_effect."""
 
     name: str
     count: int = 1
@@ -106,7 +106,7 @@ def preview(text: str, limit: int = 80) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
-def _truncate(text: str, max_bytes: int = MAX_CONTENT_BYTES) -> str:
+def truncate(text: str, max_bytes: int = MAX_CONTENT_BYTES) -> str:
     encoded = text.encode("utf-8")
     if len(encoded) <= max_bytes:
         return text
@@ -179,7 +179,7 @@ def build_msg(
     `parse`, which extracts them from a raw body + tags) -- used by the
     MCP endpoint, which receives typed arguments directly."""
     return Msg(
-        content=_truncate(content),
+        content=truncate(content),
         voice=_clean_voice(voice),
         repeat_count=_clean_count(repeat, MAX_REPEAT_COUNT),
         speed=clean_scale(speed, SPEED_RANGE),
@@ -277,7 +277,7 @@ def split_segments(content: str) -> List[Segment]:
     _parse_effect_tag) is left in place as part of the surrounding literal
     text -- same never-fail-the-message stance as the rest of this module.
     An effect *name* that doesn't resolve to a real file is a separate,
-    Announcer-side concern (see Announcer._resolve_effect): it's still a
+    Announcer-side concern (see krzykacz.assets.resolve_effect): it's still a
     valid tag here, just skipped at playback time.
 
     The total effect count (tags' "*N" summed) is capped at MAX_EFFECTS --

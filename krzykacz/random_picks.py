@@ -4,7 +4,7 @@ import logging
 import random
 from typing import Callable, NamedTuple, Optional, Sequence, Tuple
 
-from .metadata import list_effects
+from .assets import list_effects
 from .protocol import Msg, build_msg
 
 logger = logging.getLogger(__name__)

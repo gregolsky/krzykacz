@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import logging
-from pathlib import Path
-from typing import Callable, Dict, List, NamedTuple, Optional, Sequence
+from typing import Callable, Dict, NamedTuple, Optional, Sequence
 
+from .assets import list_effects
 from .protocol import (
     MAX_CONTENT_BYTES,
     MAX_EFFECT_REPEAT,
@@ -16,8 +15,8 @@ from .protocol import (
     Envelope,
     Repeat,
 )
+from .random_picks import INTENSITIES, STYLES
 
-logger = logging.getLogger(__name__)
 
 # A read-only view of this instance, rendered fresh on each call: the
 # describe_* functions below, with their instance-specific arguments already
@@ -49,20 +48,6 @@ class Describers(NamedTuple):
     limits: Describer
 
 
-def list_effects(assets_dir: str) -> List[str]:
-    """Sorted names of the sound-effect files available to the `<file>` tag.
-
-    Every regular file counts -- the effects backend plays anything ffmpeg can
-    decode, so filtering by extension here would hide usable files. A missing
-    or unreadable assets directory yields an empty list rather than failing the
-    request; it just means this instance has no effects installed."""
-    try:
-        return sorted(entry.name for entry in Path(assets_dir).iterdir() if entry.is_file())
-    except OSError as exc:
-        logger.warning("Cannot list effects in %s: %s", assets_dir, exc)
-        return []
-
-
 def describe_voices(
     tts_backend: str, voices: Sequence[str], default_voice: str
 ) -> Dict[str, object]:
@@ -91,16 +76,10 @@ def describe_limits(
     history_size: int,
     queue_size: int,
     rate_limit_interval: float,
-    curse_intensities: Sequence[str],
-    curse_styles: Sequence[str],
 ) -> Dict[str, object]:
     """The numbers a caller would otherwise have to hardcode from the README:
     how long a message may be, how far `repeat` and `replay` reach, how often
-    it may call at all, and the valid random_curse filter values.
-
-    `curse_intensities`/`curse_styles` are passed in rather than imported
-    from krzykacz.random_picks directly -- that module already imports
-    list_effects from this one, and importing back would cycle."""
+    it may call at all, and the valid random_curse filter values."""
     return {
         "max_content_bytes": MAX_CONTENT_BYTES,
         "max_spoken_bytes": MAX_SPOKEN_BYTES,
@@ -118,8 +97,8 @@ def describe_limits(
         "speed_range": list(SPEED_RANGE),
         "variation_range": list(VARIATION_RANGE),
         "rhythm_range": list(RHYTHM_RANGE),
-        "curse_intensities": list(curse_intensities),
-        "curse_styles": list(curse_styles),
+        "curse_intensities": list(INTENSITIES),
+        "curse_styles": list(STYLES),
     }
 
 
