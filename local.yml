@@ -10,6 +10,16 @@
         virtualenv: /opt/krzykacz/venv
         virtualenv_command: python3 -m venv
 
+    # Ships enabled with the image for NFS, which krzykacz doesn't use; it
+    # listens on port 111 on every interface.
+    - name: Disable rpcbind
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+        masked: true
+      loop: [rpcbind.socket, rpcbind.service]
+
     - name: Install code, unit and udev rule, then restart krzykacz
       ansible.builtin.command: ./scripts/install-service.sh
       args:
