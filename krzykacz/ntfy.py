@@ -27,7 +27,9 @@ def listen(server: str, topic: str, on_message: Submit) -> None:
                 resp.raise_for_status()
                 logger.info("Connected, listening for messages")
                 backoff = 1
-                for line in resp.iter_lines():
+                # chunk_size=1: the default (512) blocks until 512 bytes arrive, so a
+                # short message waits minutes for keepalives to fill the buffer.
+                for line in resp.iter_lines(chunk_size=1):
                     if not line:
                         continue
                     _handle_line(line, on_message)
