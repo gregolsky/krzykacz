@@ -91,10 +91,7 @@ def main() -> None:
     cfg = Config.from_env()
     light = build_light(cfg)
     # The hub powers every port at boot, so the lamp starts lit until told otherwise.
-    try:
-        light.off()
-    except Exception:
-        logger.exception("Failed to turn light off at startup")
+    light.off()
     tts = build_tts(cfg)
     effects = build_effects(cfg)
 
