@@ -3,6 +3,11 @@
 Listens on an ntfy topic, blinks a USB lamp 💡 (via `uhubctl`), and reads messages
 aloud in Polish 🗣️ (Piper TTS) through the audio jack 🔊.
 
+> **Pick a random topic name.** On a public server like ntfy.sh the topic is
+> the only secret: anyone who knows it can make the speaker talk and read
+> every message sent to it. Use something unguessable, e.g.
+> `krzykacz-$(openssl rand -hex 8)`, not `krzykacz` or your hostname.
+
 ## Protocol 📡
 
 The ntfy message body is the literal text to read aloud. Parameters (voice,
@@ -433,7 +438,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 | Variable | Default | Description |
 |---|---|---|
-| `KRZYKACZ_TOPIC` | *(required)* | ntfy topic name |
+| `KRZYKACZ_TOPIC` | *(required)* | ntfy topic name -- make it random, it's the only thing gating who can trigger the box |
 | `KRZYKACZ_NTFY_SERVER` | `https://ntfy.sh` | ntfy server |
 | `KRZYKACZ_LIGHT` | `uhubctl` | `uhubctl` or `null` |
 | `KRZYKACZ_UHUBCTL_LOC` | `1-1` | USB hub location |
