@@ -8,7 +8,6 @@ from krzykacz.tts import (
     PiperTts,
     Prosody,
     RoutedTts,
-    Tts,
     VoiceSpec,
     _wav_to_pcm,
 )
@@ -29,55 +28,36 @@ def _capture_cmd(monkeypatch):
     return captured
 
 
-def test_say_default_impl_calls_synthesize_then_play_in_order():
-    calls = []
-
-    class RecordingTts(Tts):
-        def fingerprint(self, voice=None):
-            return f"recording:{voice}"
-
-        def synthesize(self, text, voice=None, prosody=Prosody()):
-            calls.append(("synthesize", text, voice))
-            return b"audio-bytes"
-
-        def play(self, audio):
-            calls.append(("play", audio))
-
-    RecordingTts().say("hej", voice="justyna")
-
-    assert calls == [("synthesize", "hej", "justyna"), ("play", b"audio-bytes")]
-
-
 def test_default_voice_must_be_in_voices_dict():
     with pytest.raises(ValueError):
         PiperTts(voices={"darkman": "/models/darkman.onnx"}, default_voice="justyna")
 
 
-def test_model_path_resolves_known_voice():
+def test_voice_spec_resolves_known_voice():
     tts = PiperTts(
         voices={"darkman": "/models/darkman.onnx", "justyna": "/models/justyna.onnx"},
         default_voice="darkman",
     )
-    assert tts._model_path("justyna") == "/models/justyna.onnx"
+    assert tts._voice_spec("justyna").model_path == "/models/justyna.onnx"
 
 
-def test_model_path_falls_back_to_default_for_unknown_voice():
+def test_voice_spec_falls_back_to_default_for_unknown_voice():
     tts = PiperTts(
         voices={"darkman": "/models/darkman.onnx", "justyna": "/models/justyna.onnx"},
         default_voice="darkman",
     )
-    assert tts._model_path("nieznany") == "/models/darkman.onnx"
+    assert tts._voice_spec("nieznany").model_path == "/models/darkman.onnx"
 
 
-def test_model_path_falls_back_to_default_when_no_voice_given():
+def test_voice_spec_falls_back_to_default_when_no_voice_given():
     tts = PiperTts(
         voices={"darkman": "/models/darkman.onnx", "justyna": "/models/justyna.onnx"},
         default_voice="darkman",
     )
-    assert tts._model_path(None) == "/models/darkman.onnx"
+    assert tts._voice_spec(None).model_path == "/models/darkman.onnx"
 
 
-def test_model_path_resolves_a_speaker_within_a_multi_speaker_voice():
+def test_voice_spec_resolves_a_speaker_within_a_multi_speaker_voice():
     tts = PiperTts(
         voices={
             "darkman": "/models/darkman.onnx",
@@ -85,7 +65,7 @@ def test_model_path_resolves_a_speaker_within_a_multi_speaker_voice():
         },
         default_voice="darkman",
     )
-    assert tts._model_path("kopa") == "/models/pl_PL-tts-pl.onnx"
+    assert tts._voice_spec("kopa").model_path == "/models/pl_PL-tts-pl.onnx"
 
 
 def test_synthesize_includes_speaker_flag_for_multi_speaker_voice(monkeypatch):

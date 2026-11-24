@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from typing import Dict, Iterator, Optional, Tuple
 
-from .protocol import RHYTHM_RANGE, SPEED_RANGE, VARIATION_RANGE, clean_scale
+from .protocol import RHYTHM_RANGE, SPEED_RANGE, TRUE_VALUES, VARIATION_RANGE, clean_scale
 from .tts import Prosody, VoiceSpec
 
 
@@ -13,7 +13,7 @@ def _env(name: str, default: Optional[str] = None) -> Optional[str]:
 
 
 def _env_bool(name: str) -> bool:
-    return _env(name, "0").strip().lower() in ("1", "true", "yes", "on")
+    return _env(name, "0").strip().lower() in TRUE_VALUES
 
 
 def _env_scale(name: str, bounds: Tuple[float, float]) -> Optional[float]:

@@ -122,23 +122,6 @@ def test_play_pcm_spawn_failure_propagates(monkeypatch):
         FfmpegEffects().play_pcm(b"")
 
 
-def test_play_decodes_then_plays(monkeypatch, tmp_path):
-    """play() is decode() -> play_pcm() -- the ABC's default composition."""
-    calls = []
-
-    class RecordingEffects(FfmpegEffects):
-        def decode(self, path):
-            calls.append(("decode", path))
-            return b"pcm-bytes"
-
-        def play_pcm(self, data):
-            calls.append(("play_pcm", data))
-
-    RecordingEffects().play(tmp_path / "boom.ogg")
-
-    assert calls == [("decode", tmp_path / "boom.ogg"), ("play_pcm", b"pcm-bytes")]
-
-
 def test_null_effects_decode_returns_no_audio_and_logs(tmp_path, caplog):
     with caplog.at_level("INFO"):
         result = NullEffects().decode(tmp_path / "boom.ogg")

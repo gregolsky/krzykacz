@@ -19,22 +19,14 @@ def raw_pcm_duration_s(audio: bytes, sample_rate: int, channels: int) -> float:
     return len(audio) / (sample_rate * bytes_per_frame)
 
 
-def aplay_cmd(alsa_device: Optional[str]) -> List[str]:
-    """Builds an `aplay` invocation for audio that carries its own header
-    (e.g. the WAV that espeak-ng writes). Shared so KRZYKACZ_ALSA_DEVICE is
-    honoured identically everywhere we play sound."""
+def aplay_raw_cmd(alsa_device: Optional[str], sample_rate: int, channels: int) -> List[str]:
+    """Builds an `aplay` invocation for headerless S16_LE PCM -- the only
+    format played anywhere (piper, espeak-ng after _wav_to_pcm, ffmpeg).
+    Shared so KRZYKACZ_ALSA_DEVICE is honoured identically everywhere."""
     cmd = ["aplay", "-q"]
     if alsa_device:
         cmd += ["-D", alsa_device]
-    return cmd
-
-
-def aplay_raw_cmd(alsa_device: Optional[str], sample_rate: int, channels: int) -> List[str]:
-    """Builds an `aplay` invocation for headerless PCM, which is what both
-    `piper --output-raw` and our ffmpeg decode produce."""
-    return aplay_cmd(alsa_device) + [
-        "-f", "S16_LE", "-r", str(sample_rate), "-c", str(channels), "-t", "raw",
-    ]
+    return cmd + ["-f", "S16_LE", "-r", str(sample_rate), "-c", str(channels), "-t", "raw"]
 
 
 def communicate_or_kill(
@@ -47,16 +39,6 @@ def communicate_or_kill(
     after it."""
     try:
         proc.communicate(data, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        kill(proc)
-        raise
-
-
-def wait_or_kill(proc: "subprocess.Popen[bytes]", timeout: float) -> None:
-    """Like Popen.wait(), but kills the process on timeout instead of
-    leaving it running (see communicate_or_kill)."""
-    try:
-        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         kill(proc)
         raise

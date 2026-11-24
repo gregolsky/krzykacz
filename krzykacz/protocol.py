@@ -11,8 +11,8 @@ MAX_CONTENT_BYTES = 800
 
 # Cap on the fully-joined text after `repeat` duplication -- without this,
 # repeat=10 on a near-MAX_CONTENT_BYTES message is ~9 minutes of audio again,
-# defeating the point of shrinking MAX_CONTENT_BYTES. Applied in
-# Announcer._announce, after REPEAT_SEPARATOR.join(...).
+# defeating the point of shrinking MAX_CONTENT_BYTES. Enforced by the
+# announcer when it renders repeats (see _repeats_within_budget).
 MAX_SPOKEN_BYTES = 1600
 
 MAX_VOICE_CHARS = 64
@@ -20,6 +20,9 @@ _VOICE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 MAX_REPEAT_COUNT = 10
 REPEAT_SEPARATOR = " Powtarzam! "
+
+# Spellings of "on" accepted from tags and environment variables alike.
+TRUE_VALUES = ("1", "true", "yes", "on")
 
 # A tag's own repeat suffix, e.g. "<footstep*6>" -- distinct from the
 # message-wide `repeat` tag (MAX_REPEAT_COUNT/REPEAT_SEPARATOR above), which
@@ -124,34 +127,16 @@ def _clean_voice(value: object) -> Optional[str]:
     return value
 
 
-def _clean_repeat_count(value: object) -> int:
-    """Validates the optional "repeat" field: how many times to speak the
-    message, separated by "Powtarzam!". Missing, non-numeric, or out-of-range
-    values fall back to 1 (spoken once, no repetition) rather than failing
-    the message -- this is a nice-to-have emphasis knob, not something worth
-    dropping a whole alert over."""
+def _clean_count(value: object, maximum: int) -> int:
+    """Validates a repeat count -- the message-wide `repeat` tag, or one
+    effect tag's "*N" suffix: an int clamped into 1..maximum. Missing,
+    non-numeric or below-1 values mean 1 (played once) rather than failing
+    the message -- emphasis is a nice-to-have, never worth dropping an alert."""
     try:
         count = int(value)
     except (TypeError, ValueError):
         return 1
-    if count < 1:
-        return 1
-    return min(count, MAX_REPEAT_COUNT)
-
-
-def _clean_effect_count(value: str) -> int:
-    """Validates the "*N" suffix of one effect tag: how many times to play
-    that one sound back to back. Same fallback shape as
-    _clean_repeat_count -- _EFFECT_REPEAT_RE only ever hands this digits, so
-    the ValueError branch is unreachable in practice, but kept for the same
-    defend-in-depth reason as the other _clean_* helpers."""
-    try:
-        count = int(value)
-    except (TypeError, ValueError):
-        return 1
-    if count < 1:
-        return 1
-    return min(count, MAX_EFFECT_REPEAT)
+    return min(max(count, 1), maximum)
 
 
 def _clean_flag(value: object) -> bool:
@@ -162,7 +147,7 @@ def _clean_flag(value: object) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
-        return value.strip().lower() in ("1", "true", "yes", "on")
+        return value.strip().lower() in TRUE_VALUES
     return False
 
 
@@ -196,7 +181,7 @@ def build_msg(
     return Msg(
         content=_truncate(content),
         voice=_clean_voice(voice),
-        repeat_count=_clean_repeat_count(repeat),
+        repeat_count=_clean_count(repeat, MAX_REPEAT_COUNT),
         speed=clean_scale(speed, SPEED_RANGE),
         variation=clean_scale(variation, VARIATION_RANGE),
         rhythm=clean_scale(rhythm, RHYTHM_RANGE),
@@ -274,7 +259,7 @@ def _parse_effect_tag(raw: str) -> Optional[Tuple[str, int]]:
     count = 1
     repeat_match = _EFFECT_REPEAT_RE.match(raw)
     if repeat_match:
-        raw, count = repeat_match.group(1).strip(), _clean_effect_count(repeat_match.group(2))
+        raw, count = repeat_match.group(1).strip(), _clean_count(repeat_match.group(2), MAX_EFFECT_REPEAT)
 
     name = raw
     if not name or "/" in name or "\\" in name or name in (".", ".."):

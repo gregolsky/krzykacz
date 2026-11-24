@@ -105,7 +105,7 @@ def main() -> None:
 
     voices_info, default_voice = voice_names(cfg)
     voices = functools.partial(describe_voices, cfg.tts_backend, voices_info, default_voice)
-    effects = functools.partial(describe_effects, cfg.assets_dir)
+    effects_view = functools.partial(describe_effects, cfg.assets_dir)
     limits = functools.partial(
         describe_limits,
         cfg.history_size,
@@ -114,7 +114,7 @@ def main() -> None:
         INTENSITIES,
         STYLES,
     )
-    describers = Describers(voices=voices, effects=effects, limits=limits)
+    describers = Describers(voices=voices, effects=effects_view, limits=limits)
     control = Control(
         snapshot=announcer.snapshot,
         set_muted=announcer.set_muted,

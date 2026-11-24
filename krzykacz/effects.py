@@ -39,12 +39,6 @@ class Effects(ABC):
         """Plays raw PCM exactly as decode() produces it."""
         ...
 
-    def play(self, path: Path) -> None:
-        """Convenience: decode then play immediately. Announcer doesn't call
-        this directly -- it needs decode()'d bytes to interleave with speech
-        -- but it's the natural single-file entry point otherwise."""
-        self.play_pcm(self.decode(path))
-
 
 class FfmpegEffects(Effects):
     """Plays any format ffmpeg can decode (mp3, ogg, wav, ...) via ffmpeg + aplay

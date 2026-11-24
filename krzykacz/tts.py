@@ -128,12 +128,6 @@ class Tts(ABC):
         length). Defaults to false -- a backend opts in."""
         return False
 
-    def say(self, text: str, voice: Optional[str] = None, prosody: Prosody = Prosody()) -> None:
-        """Convenience: synthesize then play immediately. Announcer calls the
-        two steps separately so synthesis can happen before the light turns
-        on -- see Announcer._announce."""
-        self.play(self.synthesize(text, voice, prosody))
-
 
 class VoiceSpec(NamedTuple):
     """Which .onnx model to run, and which embedded speaker index to select
@@ -182,9 +176,6 @@ class PiperTts(Tts):
         if voice:
             logger.warning("Unknown voice %r, using default %r", voice, self.default_voice)
         return self.voices[self.default_voice]
-
-    def _model_path(self, voice: Optional[str]) -> str:
-        return self._voice_spec(voice).model_path
 
     def fingerprint(self, voice: Optional[str] = None) -> str:
         spec = self._voice_spec(voice)
