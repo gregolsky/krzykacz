@@ -712,6 +712,29 @@ systemctl status krzykacz
 journalctl -u krzykacz -f
 ```
 
+### Deploying updates over ntfy
+
+`systemd/krzykacz-deploy.service` runs `scripts/deploy-listener.sh` as root: it
+listens on the ntfy topic `krzykacz-rpi-deploy` (`KRZYKACZ_DEPLOY_TOPIC`) and, on
+a message whose body is exactly `deploy-krzykacz`, runs `ansible-pull` against
+`main` of this repo. The playbook (`local.yml`) updates the venv's requirements
+and re-runs `install-service.sh`, which restarts krzykacz.
+
+```bash
+curl -d deploy-krzykacz https://ntfy.sh/krzykacz-rpi-deploy
+journalctl -u krzykacz-deploy -f
+```
+
+Anyone who knows the topic can trigger a deploy, but a deploy only installs
+what's already on `main`. Bootstrap once on the Pi:
+
+```bash
+sudo apt install ansible-core git
+sudo ansible-pull -U https://github.com/gregolsky/krzykacz.git -C main \
+    -d /var/lib/krzykacz-deploy/checkout local.yml
+sudo systemctl start krzykacz-deploy
+```
+
 ## Unit tests ✅
 
 ```bash

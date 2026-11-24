@@ -1,0 +1,31 @@
+# Deploy playbook, run on the Pi by ansible-pull (see scripts/deploy-listener.sh).
+# ansible-pull checks out main and runs this file from the checkout's root.
+- hosts: localhost
+  connection: local
+  become: true
+  tasks:
+    - name: Update Python dependencies
+      ansible.builtin.pip:
+        requirements: "{{ playbook_dir }}/requirements.txt"
+        virtualenv: /opt/krzykacz/venv
+        virtualenv_command: python3 -m venv
+
+    - name: Install code, unit and udev rule, then restart krzykacz
+      ansible.builtin.command: ./scripts/install-service.sh
+      args:
+        chdir: "{{ playbook_dir }}"
+
+    - name: Install the deploy listener unit
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/systemd/krzykacz-deploy.service"
+        dest: /etc/systemd/system/krzykacz-deploy.service
+        mode: "0644"
+
+    # Not restarted here: this playbook runs as the listener's child, so a
+    # restart would kill the deploy mid-way. A changed listener takes effect
+    # on the next reboot or manual restart.
+    - name: Enable the deploy listener
+      ansible.builtin.systemd_service:
+        name: krzykacz-deploy
+        enabled: true
+        daemon_reload: true

@@ -1,0 +1,15 @@
+[Unit]
+Description=Krzykacz deploy listener - ansible-pull from main on an ntfy signal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as root: the deploy installs packages, units and udev rules.
+EnvironmentFile=-/etc/krzykacz.env
+ExecStart=/opt/krzykacz/scripts/deploy-listener.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
