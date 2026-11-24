@@ -6,8 +6,6 @@ from conftest import FakeAnnouncer, make_describers, make_pickers
 from krzykacz.mcp_server import (
     _build_mcp_server,
     _client_ip,
-    _submit_message,
-    _submit_repeat,
     _wrap_auth,
     _wrap_client_ip,
     build_mcp_app,
@@ -17,41 +15,46 @@ from krzykacz.ratelimit import IpRateLimiter
 
 
 
-def test_submit_message_builds_msg_envelope():
+def _tool(announcer, name, args):
+    mcp = _build_mcp_server(announcer.submit, make_describers(), make_pickers(), IpRateLimiter(0))
+    return asyncio.run(mcp.call_tool(name, args)).content[0].text
+
+
+def test_send_message_builds_msg_envelope():
     announcer = FakeAnnouncer()
 
-    result = _submit_message(announcer.submit, "hello", "justyna", 2)
+    reply = _tool(announcer, "send_message", {"content": "hello", "voice": "justyna", "repeat": 2})
 
     assert announcer.submitted == [Msg(content="hello", voice="justyna", repeat_count=2)]
-    assert result is True
+    assert reply == "queued"
 
 
-def test_submit_message_defaults_to_none_voice_and_repeat():
+def test_send_message_defaults_to_none_voice_and_repeat():
     announcer = FakeAnnouncer()
 
-    _submit_message(announcer.submit, "hello", None, None)
+    _tool(announcer, "send_message", {"content": "hello"})
 
     assert announcer.submitted == [Msg(content="hello")]
 
 
-def test_submit_message_forwards_prepare():
+def test_send_message_forwards_prepare():
     announcer = FakeAnnouncer()
 
-    _submit_message(announcer.submit, "hello", "justyna", None, prepare=True)
+    _tool(announcer, "send_message", {"content": "hello", "voice": "justyna", "prepare": True})
 
     assert announcer.submitted == [Msg(content="hello", voice="justyna", prepare=True)]
 
 
-def test_submit_message_forwards_announcer_result():
+def test_send_message_reports_a_full_queue():
     announcer = FakeAnnouncer(accept=False)
 
-    assert _submit_message(announcer.submit, "hello", None, None) is False
+    assert _tool(announcer, "send_message", {"content": "hello"}) == "dropped (queue full)"
 
 
-def test_submit_repeat_builds_repeat_envelope():
+def test_play_recent_message_builds_repeat_envelope():
     announcer = FakeAnnouncer()
 
-    _submit_repeat(announcer.submit, -2)
+    _tool(announcer, "play_recent_message", {"number": -2})
 
     assert announcer.submitted == [Repeat(number=-2)]
 

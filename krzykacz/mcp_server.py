@@ -3,13 +3,14 @@ from __future__ import annotations
 import contextvars
 from typing import Dict, Optional
 
+from .actions import Actions, Outcome, Result
 from .announcer import Submit
 from .audit import log_call
 from .auth import check_bearer_token
 from .metadata import Control, Describers, describe_queue
 from .protocol import build_msg, build_repeat
 from .random_picks import INTENSITIES, STYLES, Pickers
-from .ratelimit import IpRateLimiter, rate_limit_or_log
+from .ratelimit import IpRateLimiter
 
 # The `mcp` package requires Python >=3.10 and isn't in requirements.txt --
 # it's an opt-in extra, installed only when KRZYKACZ_MCP_ENABLED is used
@@ -23,33 +24,6 @@ from .ratelimit import IpRateLimiter, rate_limit_or_log
 # mcp.server.mcpserver.context.Context.headers), so this is how a tool
 # attributes its rate-limit check and audit line to a source IP.
 _client_ip: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("client_ip", default=None)
-
-
-def _submit_message(
-    submit: Submit,
-    content: str,
-    voice: Optional[str],
-    repeat: Optional[int],
-    speed: Optional[float] = None,
-    variation: Optional[float] = None,
-    rhythm: Optional[float] = None,
-    prepare: Optional[bool] = None,
-) -> bool:
-    return submit(
-        build_msg(
-            content,
-            voice=voice,
-            repeat=repeat,
-            speed=speed,
-            variation=variation,
-            rhythm=rhythm,
-            prepare=prepare,
-        )
-    )
-
-
-def _submit_repeat(submit: Submit, number: int) -> bool:
-    return submit(build_repeat(number))
 
 
 def _wrap_auth(app, token: Optional[str]):
@@ -182,10 +156,19 @@ def _caller_ip() -> str:
     return _client_ip.get() or "unknown"
 
 
-def _queue_reply(queued: bool, muted: bool = False) -> str:
-    if queued:
-        return "queued"
-    return "dropped (muted)" if muted else "dropped (queue full)"
+_REPLIES = {
+    Outcome.QUEUED: "queued",
+    Outcome.DROPPED_FULL: "dropped (queue full)",
+    Outcome.DROPPED_MUTED: "dropped (muted)",
+}
+
+
+def _reply(result: Result, nothing_to_play: str = "nothing to play") -> str:
+    if result.outcome is Outcome.RATE_LIMITED:
+        return _RATE_LIMITED_REPLY
+    if result.outcome is Outcome.NOTHING_TO_PLAY:
+        return nothing_to_play
+    return _REPLIES[result.outcome]
 
 
 def _voice_names(voices: Dict[str, object]) -> str:
@@ -269,9 +252,7 @@ def _build_mcp_server(
 
     mcp = MCPServer("krzykacz", instructions=_instructions(voices))
 
-    def is_muted() -> bool:
-        """Whether a refused submit was down to mute, for a truthful reply."""
-        return control is not None and control.is_muted()
+    actions = Actions(submit, control.is_muted if control is not None else lambda: False, rate_limiter)
 
     @mcp.tool(title="Send message", description=_send_message_description(voices))
     def send_message(
@@ -284,23 +265,20 @@ def _build_mcp_server(
         prepare: Optional[bool] = None,
     ) -> str:
         ip = _caller_ip()
-        if not rate_limit_or_log(rate_limiter, ip, "mcp.send_message"):
-            return _RATE_LIMITED_REPLY
-        queued = _submit_message(
-            submit, content, voice, repeat, speed, variation, rhythm, prepare
-        )
-        log_call(
-            "mcp.send_message",
+        result = actions.trigger(
             ip,
-            voice=voice,
-            repeat=repeat,
-            speed=speed,
-            variation=variation,
-            rhythm=rhythm,
-            prepare=prepare,
-            status="queued" if queued else "dropped",
+            "mcp.send_message",
+            lambda: build_msg(
+                content, voice=voice, repeat=repeat, speed=speed,
+                variation=variation, rhythm=rhythm, prepare=prepare,
+            ),
         )
-        return _queue_reply(queued, not queued and is_muted())
+        if result.outcome is not Outcome.RATE_LIMITED:
+            log_call(
+                "mcp.send_message", ip, voice=voice, repeat=repeat, speed=speed,
+                variation=variation, rhythm=rhythm, prepare=prepare, status=result.status,
+            )
+        return _reply(result)
 
     @mcp.tool(
         name="play_recent_message",
@@ -309,11 +287,10 @@ def _build_mcp_server(
     )
     def play_recent_message(number: int = -1) -> str:
         ip = _caller_ip()
-        if not rate_limit_or_log(rate_limiter, ip, "mcp.play_recent_message"):
-            return _RATE_LIMITED_REPLY
-        queued = _submit_repeat(submit, number)
-        log_call("mcp.play_recent_message", ip, number=number, status="queued" if queued else "dropped")
-        return _queue_reply(queued, not queued and is_muted())
+        result = actions.trigger(ip, "mcp.play_recent_message", lambda: build_repeat(number))
+        if result.outcome is not Outcome.RATE_LIMITED:
+            log_call("mcp.play_recent_message", ip, number=number, status=result.status)
+        return _reply(result)
 
     # Read-only views: audited like everything else, but not rate-limited --
     # they touch neither the light nor the speaker, matching the unlimited
@@ -331,39 +308,30 @@ def _build_mcp_server(
     @mcp.tool(title="Play random sound", description=_RANDOM_SOUND_DESCRIPTION)
     def random_sound() -> str:
         ip = _caller_ip()
-        if not rate_limit_or_log(rate_limiter, ip, "mcp.random_sound"):
-            return _RATE_LIMITED_REPLY
-        msg = pickers.sound()
+        result = actions.trigger(ip, "mcp.random_sound", pickers.sound)
+        if result.outcome is Outcome.RATE_LIMITED:
+            return _reply(result)
+        msg = result.envelope
+        log_call("mcp.random_sound", ip, content=getattr(msg, "content", None), status=result.status)
         if msg is None:
-            log_call("mcp.random_sound", ip, status="nothing_to_play")
-            return "nothing to play: no curated sounds available"
-        queued = submit(msg)
-        log_call("mcp.random_sound", ip, content=msg.content, status="queued" if queued else "dropped")
-        return f"{_queue_reply(queued, not queued and is_muted())}: {msg.content}"
+            return _reply(result, "nothing to play: no curated sounds available")
+        return f"{_reply(result)}: {msg.content}"
 
     @mcp.tool(title="Play random curse", description=_RANDOM_CURSE_DESCRIPTION)
     def random_curse(intensity: Optional[str] = None, style: Optional[str] = None) -> str:
         ip = _caller_ip()
-        if not rate_limit_or_log(rate_limiter, ip, "mcp.random_curse"):
-            return _RATE_LIMITED_REPLY
-        msg = pickers.curse(intensity, style)
-        if msg is None:
-            log_call(
-                "mcp.random_curse", ip, intensity=intensity, style=style, status="nothing_to_play"
-            )
-            return "nothing to play: no voices configured"
-        queued = submit(msg)
+        result = actions.trigger(ip, "mcp.random_curse", lambda: pickers.curse(intensity, style))
+        if result.outcome is Outcome.RATE_LIMITED:
+            return _reply(result)
+        msg = result.envelope
         log_call(
-            "mcp.random_curse",
-            ip,
-            intensity=intensity,
-            style=style,
-            content=msg.content,
-            voice=msg.voice,
-            speed=msg.speed,
-            status="queued" if queued else "dropped",
+            "mcp.random_curse", ip, intensity=intensity, style=style,
+            content=getattr(msg, "content", None), voice=getattr(msg, "voice", None),
+            speed=getattr(msg, "speed", None), status=result.status,
         )
-        return f"{_queue_reply(queued, not queued and is_muted())}: {msg.content}"
+        if msg is None:
+            return _reply(result, "nothing to play: no voices configured")
+        return f"{_reply(result)}: {msg.content}"
 
     if control is not None:
         # Registered only when there's an announcer to control. Neither is

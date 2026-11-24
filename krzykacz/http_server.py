@@ -7,13 +7,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Container, Dict, List, Optional
 from urllib.parse import parse_qs, urlsplit
 
+from .actions import Actions, Outcome, Result
 from .announcer import Submit
 from .audit import log_call
 from .auth import check_bearer_token
 from .metadata import Control, Describer, Describers, describe_queue
 from .protocol import MAX_CONTENT_BYTES, Msg, parse
 from .random_picks import Pickers
-from .ratelimit import IpRateLimiter, rate_limit_or_log
+from .ratelimit import IpRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -48,20 +49,18 @@ class PublishHandler(BaseHTTPRequestHandler):
     def __init__(
         self,
         *args,
-        submit: Submit,
+        actions: Actions,
         get_routes: Dict[str, Describer],
         pickers: Pickers,
         control: Control,
         auth_token: Optional[str],
-        rate_limiter: IpRateLimiter,
         **kwargs,
     ):
-        self._submit = submit
+        self._actions = actions
         self._control = control
         self._get_routes = get_routes
         self._pickers = pickers
         self._auth_token = auth_token
-        self._rate_limiter = rate_limiter
         super().__init__(*args, **kwargs)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002 (stdlib signature)
@@ -141,14 +140,6 @@ class PublishHandler(BaseHTTPRequestHandler):
         self._control.set_muted(muted)
         self._respond(200, {"muted": muted})
 
-    def _dropped(self) -> dict:
-        """The body for a submit that was refused. Says why when it's mute,
-        since "dropped" alone reads as a full queue."""
-        payload: dict = {"status": "dropped"}
-        if self._control.is_muted():
-            payload["reason"] = "muted"
-        return payload
-
     def _publish(self) -> None:
         try:
             length = int(self.headers.get("Content-Length", ""))
@@ -164,43 +155,35 @@ class PublishHandler(BaseHTTPRequestHandler):
             self._respond(413, {"error": "body too large"})
             return
 
-        # Rate-limited here, after the request is known well-formed -- only
-        # a call that could actually reach the announcer should spend this
-        # IP's budget. Not in _route: the GET views are harmless reads and
-        # stay unlimited.
-        if not rate_limit_or_log(self._rate_limiter, self.client_address[0], "publish"):
-            self._respond(429, {"error": "rate limited"})
-            return
-
-        body = self.rfile.read(length).decode("utf-8", errors="replace")
-        envelope = parse(body, self._tags())
-        queued = self._submit(envelope)
-        self._respond(202 if queued else 503, {"status": "queued"} if queued else self._dropped())
+        # Only a well-formed request reaches the rate check, so only a call
+        # that could actually play something spends this IP's budget.
+        result = self._actions.trigger(
+            self.client_address[0],
+            "publish",
+            lambda: parse(self.rfile.read(length).decode("utf-8", errors="replace"), self._tags()),
+        )
+        self._respond_to(result)
 
     def _random(self, action: str, make_msg: Callable[[], Optional[Msg]]) -> None:
-        """Shared shape for the two randomized actions: no request body (so no
-        Content-Length requirement, unlike _publish), rate-limited the same
-        way as publish, and the response echoes what was picked since a
-        random action gives the caller no other way to learn what fired."""
-        if not rate_limit_or_log(self._rate_limiter, self.client_address[0], action):
+        """No request body, unlike _publish. The response echoes what was
+        picked, since a random action gives the caller no other way to learn
+        what fired."""
+        result = self._actions.trigger(self.client_address[0], action, make_msg)
+        msg = result.envelope
+        extra = {"content": msg.content, "voice": msg.voice, "speed": msg.speed} if isinstance(msg, Msg) else {}
+        self._respond_to(result, extra)
+
+    def _respond_to(self, result: Result, extra: Optional[dict] = None) -> None:
+        if result.outcome is Outcome.RATE_LIMITED:
             self._respond(429, {"error": "rate limited"})
-            return
-
-        msg = make_msg()
-        if msg is None:
+        elif result.outcome is Outcome.NOTHING_TO_PLAY:
             self._respond(503, {"error": "nothing to play"})
-            return
-
-        queued = self._submit(msg)
-        self._respond(
-            202 if queued else 503,
-            {
-                **({"status": "queued"} if queued else self._dropped()),
-                "content": msg.content,
-                "voice": msg.voice,
-                "speed": msg.speed,
-            },
-        )
+        elif result.outcome is Outcome.QUEUED:
+            self._respond(202, {"status": "queued", **(extra or {})})
+        else:
+            # Says why when it's mute, since "dropped" alone reads as a full queue.
+            reason = {"reason": "muted"} if result.outcome is Outcome.DROPPED_MUTED else {}
+            self._respond(503, {"status": "dropped", **reason, **(extra or {})})
 
 
 def build_http_server(
@@ -221,13 +204,13 @@ def build_http_server(
         LIMITS_PATH: describers.limits,
         QUEUE_PATH: functools.partial(describe_queue, control.snapshot),
     }
+    limiter = rate_limiter if rate_limiter is not None else IpRateLimiter.disabled()
     handler = functools.partial(
         PublishHandler,
-        submit=submit,
+        actions=Actions(submit, control.is_muted, limiter),
         get_routes=get_routes,
         pickers=pickers,
         control=control,
         auth_token=auth_token,
-        rate_limiter=rate_limiter if rate_limiter is not None else IpRateLimiter.disabled(),
     )
     return ThreadingHTTPServer((host, port), handler)
