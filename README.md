@@ -715,18 +715,24 @@ journalctl -u krzykacz -f
 ### Deploying updates over ntfy
 
 `systemd/krzykacz-deploy.service` runs `scripts/deploy-listener.sh` as root: it
-listens on the ntfy topic `krzykacz-rpi-deploy` (`KRZYKACZ_DEPLOY_TOPIC`) and, on
-a message whose body is exactly `deploy-krzykacz`, runs `ansible-pull` against
-`main` of this repo. The playbook (`local.yml`) updates the venv's requirements
+listens on the ntfy topic named by `KRZYKACZ_DEPLOY_TOPIC` and, on a message
+whose body is exactly `deploy-krzykacz`, runs `ansible-pull` against `main` of
+this repo. The playbook (`local.yml`) updates the venv's pinned requirements
 and re-runs `install-service.sh`, which restarts krzykacz.
 
+The topic is the only thing gating who can trigger a deploy, so it has no
+default: put a random name in `/etc/krzykacz.env`, next to the other settings.
+A deploy only ever installs what's already on `main`, and deploys closer
+together than `KRZYKACZ_DEPLOY_MIN_INTERVAL` seconds (default 300) are
+skipped, so flooding the topic can't keep krzykacz restarting.
+
 ```bash
-curl -d deploy-krzykacz https://ntfy.sh/krzykacz-rpi-deploy
+echo "KRZYKACZ_DEPLOY_TOPIC=krzykacz-deploy-$(openssl rand -hex 8)" | sudo tee -a /etc/krzykacz.env
+curl -d deploy-krzykacz https://ntfy.sh/<that topic>
 journalctl -u krzykacz-deploy -f
 ```
 
-Anyone who knows the topic can trigger a deploy, but a deploy only installs
-what's already on `main`. Bootstrap once on the Pi:
+Bootstrap once on the Pi:
 
 ```bash
 sudo apt install ansible-core git
