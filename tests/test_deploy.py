@@ -74,6 +74,17 @@ def test_playbook_references_files_that_exist():
     yaml = pytest.importorskip("yaml")
     tasks = yaml.safe_load((REPO / "local.yml").read_text())[0]["tasks"]
     text = str(tasks)
-    for path in ("requirements.txt", "scripts/install-service.sh", "systemd/krzykacz-deploy.service"):
+    for path in ("requirements-deploy.txt", "scripts/install-service.sh", "systemd/krzykacz-deploy.service"):
         assert path in text or Path(path).name in text, path
         assert (REPO / path).exists(), path
+
+
+def test_deploy_lockfile_pins_every_package_with_a_hash():
+    lock = (REPO / "requirements-deploy.txt").read_text()
+    pins = [line for line in lock.splitlines() if line and not line[0].isspace() and not line.startswith(("#", "--"))]
+    assert pins, "lockfile is empty"
+    for pin in pins:
+        assert "==" in pin and pin.rstrip().endswith("\\"), pin  # every pin carries --hash lines
+    top_level = [l.split("==")[0] for l in (REPO / "requirements-deploy.in").read_text().splitlines() if "==" in l]
+    for name in top_level:
+        assert any(p.startswith(name + "==") for p in pins), name

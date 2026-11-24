@@ -49,7 +49,7 @@ echo "Installed code to $INSTALL_DIR."
 if [ ! -x "$INSTALL_DIR/venv/bin/python" ]; then
     echo "Note: no venv at $INSTALL_DIR/venv -- create it before starting:" >&2
     echo "  sudo python3 -m venv $INSTALL_DIR/venv" >&2
-    echo "  sudo $INSTALL_DIR/venv/bin/pip install -r $INSTALL_DIR/requirements.txt piper-tts" >&2
+    echo "  sudo $INSTALL_DIR/venv/bin/pip install -r $INSTALL_DIR/requirements-deploy.txt" >&2
 fi
 
 # 4. udev rule granting write access to just this hub, for uhubctl.

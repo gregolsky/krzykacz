@@ -4,9 +4,9 @@
   connection: local
   become: true
   tasks:
-    - name: Update Python dependencies
+    - name: Install the locked, hashed Python dependencies
       ansible.builtin.pip:
-        requirements: "{{ playbook_dir }}/requirements.txt"
+        requirements: "{{ playbook_dir }}/requirements-deploy.txt"
         virtualenv: /opt/krzykacz/venv
         virtualenv_command: python3 -m venv
 

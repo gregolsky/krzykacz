@@ -1,0 +1,5 @@
+# Everything the Pi runs, top level only; compiled with hashes into
+# requirements-deploy.txt (see that file's header). Bump here, then recompile.
+requests==2.34.2
+piper-tts==1.8.0
+mcp==2.2.0

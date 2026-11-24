@@ -704,9 +704,8 @@ Pi, so it's preserved across runs). Create it once:
 
 ```bash
 sudo python3 -m venv /opt/krzykacz/venv
-sudo /opt/krzykacz/venv/bin/pip install -r /opt/krzykacz/requirements.txt piper-tts
-# only if using the MCP endpoint (KRZYKACZ_MCP_ENABLED=1, needs Python >= 3.10):
-sudo /opt/krzykacz/venv/bin/pip install mcp
+# locked versions with hashes (piper-tts, mcp and every transitive dependency):
+sudo /opt/krzykacz/venv/bin/pip install -r /opt/krzykacz/requirements-deploy.txt
 ```
 
 The `espeak_*` voices and the `knock` sound need two system packages, neither
@@ -722,7 +721,7 @@ journalctl -u krzykacz -f
 `systemd/krzykacz-deploy.service` runs `scripts/deploy-listener.sh` as root: it
 listens on the ntfy topic named by `KRZYKACZ_DEPLOY_TOPIC` and, on a message
 whose body is exactly `deploy-krzykacz`, runs `ansible-pull` against `main` of
-this repo. The playbook (`local.yml`) updates the venv's pinned requirements
+this repo. The playbook (`local.yml`) installs `requirements-deploy.txt` (locked, with hashes)
 and re-runs `install-service.sh`, which restarts krzykacz.
 
 The topic is the only thing gating who can trigger a deploy, so it has no
