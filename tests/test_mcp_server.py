@@ -16,6 +16,7 @@ from krzykacz.ratelimit import IpRateLimiter
 
 
 def _tool(announcer, name, args):
+    pytest.importorskip("mcp", reason="the optional 'mcp' package isn't installed")
     mcp = _build_mcp_server(announcer.submit, make_describers(), make_pickers(), IpRateLimiter(0))
     return asyncio.run(mcp.call_tool(name, args)).content[0].text
 
